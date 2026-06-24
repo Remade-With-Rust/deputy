@@ -1,0 +1,63 @@
+# cargo-deny — supply-chain gate for Deputy's OWN dependencies (dogfooding the mission).
+# Enforces README's "No GPL/LGPL anywhere in the dependency tree".
+# Run: cargo deny check
+
+[licenses]
+# Anything not in `allow` is denied. GPL/LGPL/AGPL are deliberately absent → denied.
+confidence-threshold = 0.9
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    # Mozilla CA root bundle (webpki-roots), pulled via the vendored mid-verify -> kms-client
+    # -> reqwest/rustls chain. A permissive data license, not copyleft.
+    "CDLA-Permissive-2.0",
+]
+
+# The vendored MATA mID crates ship no `license` field in their Cargo.toml. Their published
+# npm mirrors (@matanetwork/sovereign-id*) are MIT; assert that here until the Rust crates
+# carry a license field upstream. See docs/AUTH.md §10.
+[[licenses.clarify]]
+crate = "mid-verify"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mid-issuer"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "kms-client"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "kms-types"
+expression = "MIT"
+license-files = []
+
+[bans]
+multiple-versions = "warn"
+# Downgraded to "warn": the vendored MATA mID chain (external, public path-dep crates in
+# mata-master) uses versionless path deps among themselves, which read as wildcards and
+# cannot be exempted by allow-wildcard-paths (that only covers private crates). Our own
+# intra-workspace path deps carry explicit versions. Revisit if mid-verify is published.
+wildcards = "warn"
+allow-wildcard-paths = true
+
+[advisories]
+# Advisory DB is fetched from the network (CI does this); fail on known issues.
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

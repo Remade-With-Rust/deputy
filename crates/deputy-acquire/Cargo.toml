@@ -1,0 +1,18 @@
+[package]
+name = "deputy-acquire"
+description = "Recursive dependency discovery and verified download into the dirty store."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+deputy-core = { path = "../deputy-core", version = "0.1.0" }
+deputy-store = { path = "../deputy-store", version = "0.1.0" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+sha2 = "0.10"

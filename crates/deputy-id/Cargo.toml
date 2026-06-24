@@ -1,0 +1,28 @@
+[package]
+name = "deputy-id"
+description = "MATA mID verification (pure Rust) and Deputy's identity & session model."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Not publishable yet: depends on the not-yet-public `mid-verify` via a local path.
+# See docs/AUTH.md §10.
+publish = false
+
+[dependencies]
+# Vendored MATA mID reference (RP-side verification), the authoritative source the JS SDK
+# mirrors. Chain: mid-verify -> mid-issuer -> kms-client (pulls reqwest/tokio; see AUTH.md §10).
+mid-verify = { path = "../../../mata-master/packages/mid-verify" }
+thiserror = { workspace = true }
+getrandom = "0.3"
+
+[dev-dependencies]
+# Token-minting harness for tests: mint real wallet-style mID tokens, then verify them.
+mid-issuer = { path = "../../../mata-master/packages/mid-issuer" }
+kms-client = { path = "../../../mata-master/packages/kms-client" }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+sha2 = "0.10"
+base64 = "0.22"
+serde_json = { workspace = true }

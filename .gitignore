@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+.DS_Store
+
+# Deputy is a binary-producing app, so Cargo.lock IS committed (do not ignore it).
+
+# Local Deputy home / runtime state must never be committed.
+/.deputy

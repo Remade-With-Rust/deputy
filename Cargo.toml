@@ -1,0 +1,28 @@
+# Deputy — Cargo workspace.
+# Architecture & crate roles: docs/ARCHITECTURE.md §5.
+# M0 is intentionally dependency-free so the skeleton builds offline and green;
+# crates opt into the central [workspace.dependencies] as later milestones land.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/remade-with-rust/deputy"
+authors = ["MATA Network"]
+
+# Centrally-pinned versions. Declaring them here downloads nothing until a crate
+# actually depends on one (via `{ workspace = true }`). Populated as milestones need them.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[profile.release]
+# Security/perf posture for shipped binaries; revisit during M8 hardening.
+overflow-checks = true
+lto = "thin"

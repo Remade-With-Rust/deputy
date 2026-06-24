@@ -1,0 +1,30 @@
+# Deputy deploy gate — EXAMPLE CI integration.
+#
+# This is the entry point a repository that depends on Deputy would add to its own CI to
+# refuse shipping unless every dependency is promoted, clean, and receipted in a Deputy vault
+# (`deputy gate` exits non-zero otherwise). It is a TEMPLATE: it runs only on manual dispatch
+# and is not wired into Deputy's own automated CI, which needs (a) a provisioned vault +
+# DEPUTY_PASSPHRASE secret and (b) the mid-verify path-dep / portability fix (docs/AUTH.md §10).
+name: Deputy gate (example)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    name: gate dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # In a real pipeline you would install a released `deputy` binary and restore the vault
+      # (from an encrypted artifact / secret store) rather than building from source here.
+      - name: Build the deputy CLI
+        run: cargo build -p deputy-cli --release
+
+      # Fail the build if any dependency is not promoted & clean in the vault.
+      - name: Gate dependencies
+        env:
+          DEPUTY_PASSPHRASE: ${{ secrets.DEPUTY_PASSPHRASE }}
+        run: ./target/release/deputy gate . --vault "${DEPUTY_VAULT:-$HOME/.deputy}"

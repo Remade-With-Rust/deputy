@@ -1,0 +1,18 @@
+[package]
+name = "deputy-ecosystem"
+description = "Dependency-ecosystem implementations behind the DepEcosystem trait (Cargo first)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+deputy-core = { path = "../deputy-core", version = "0.1.0" }
+# Cargo.lock is TOML.
+toml = "0.8"
+serde = { workspace = true }
+sha2 = "0.10"
+# Sync HTTP client over rustls (memorysafety.org), for fetching immutable .crate tarballs.
+ureq = "2"

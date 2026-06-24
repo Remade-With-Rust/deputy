@@ -1,0 +1,18 @@
+[package]
+name = "deputy-analyze"
+description = "Language analytics and critical-point-of-failure scoring."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+deputy-core = { path = "../deputy-core", version = "0.1.0" }
+serde = { workspace = true }
+# Cargo.lock + each crate's Cargo.toml are TOML.
+toml = "0.8"
+# Pure-Rust gzip (miniz_oxide) + tar to inspect .crate tarballs. No network, no C.
+flate2 = "1"
+tar = "0.4"

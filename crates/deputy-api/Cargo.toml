@@ -1,0 +1,11 @@
+[package]
+name = "deputy-api"
+description = "The API-first capability surface: in-process API plus a localhost transport."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]

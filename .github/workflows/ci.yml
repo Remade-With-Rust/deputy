@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+# NOTE (portability): `deputy-id` currently path-depends on MATA's `mid-verify` at an absolute
+# local path (../../../mata-master/...), so this workspace only resolves on a machine where
+# mata-master is checked out. Before CI can run green, resolve that per docs/AUTH.md §10
+# (vendor the mid crates into ./vendor, use a git dep, or feature-gate the `mid` dependency).
+# Also: `cargo fmt --all` follows path-deps into mata-master's workspace and reformats it —
+# the fmt step below is scoped to Deputy's own crates to prevent that.
+
+jobs:
+  check:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format (scoped to Deputy crates; --all escapes into path-dep workspaces)
+        run: >-
+          cargo fmt
+          -p deputy-core -p deputy-crypto -p deputy-store -p deputy-id
+          -p deputy-api -p deputy-cli -p deputy-ui -p deputy-acquire
+          -p deputy-analyze -p deputy-scan -p deputy-deploy -p deputy-ecosystem
+          -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --workspace --all-features
+
+  deny:
+    name: cargo-deny (license + advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources advisories

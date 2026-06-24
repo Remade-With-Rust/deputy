@@ -1,0 +1,22 @@
+[package]
+name = "deputy-crypto"
+description = "Argon2id key derivation, AES-256-GCM sealing, and the key hierarchy for Deputy's encryption at rest."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Raw Argon2id KDF only (no PHC string / rand): keeps the RNG surface to one crate.
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
+# AES-256-GCM. default-features off so it does not pull its own getrandom/rand_core;
+# we generate nonces with `getrandom` directly.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+hkdf = "0.12"
+sha2 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+getrandom = "0.3"
+thiserror = { workspace = true }
+serde = { workspace = true }

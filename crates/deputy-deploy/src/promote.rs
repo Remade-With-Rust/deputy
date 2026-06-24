@@ -2,11 +2,12 @@ use deputy_core::{
     ArtifactRef, ContentHash, EcosystemId, Error, Finding, Result, ScanVerdict, StoreKind,
 };
 use deputy_store::Vault;
+use serde::Serialize;
 use serde_json::json;
 
 /// A promotion receipt: the append-only, hash-chained record that a specific artifact was
 /// promoted into prod, by whom, and where it sits in the audit chain.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Receipt {
     pub name: String,
     pub version: String,
@@ -20,7 +21,7 @@ pub struct Receipt {
 }
 
 /// The outcome of a promotion attempt.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum Promotion {
     /// Promoted into prod; carries the receipt.
     Promoted(Receipt),

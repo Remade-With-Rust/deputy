@@ -3,14 +3,14 @@ use std::io::Read as _;
 
 use deputy_core::{Error, Result};
 use flate2::read::GzDecoder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tar::Archive;
 
 use crate::language::Language;
 
 /// What inspecting a crate's `.crate` tarball revealed: its language line counts and the
 /// capability signals that bear on supply-chain risk (`docs/PIPELINE.md` §3).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct CrateFacts {
     /// Lines of code per language.
     pub languages: BTreeMap<Language, usize>,

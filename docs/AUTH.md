@@ -156,27 +156,38 @@ key, but mID itself exports no such secret today.
 
 ## 10. Open questions
 
-1. **Use the private Rust reference directly?** — **Resolved (M2): vendored via path dep.**
-   `deputy-id` depends on `mid-verify` at `/Users/talmond/mata-master/packages/mid-verify`.
-   `verify` is implemented; 9 tests pass against real wallet-minted tokens.
+1. **Use the private Rust reference directly?** — **Resolved: git dependency on the public
+   mID crates.** `deputy-id` depends on `mid-verify` from
+   [`github.com/Remade-With-Rust/mid`](https://github.com/Remade-With-Rust/mid), **pinned to a
+   rev** (Deputy practises its own thesis — a trust-base dependency never tracks a moving
+   branch). `verify` is implemented; 9 tests pass against real wallet-minted tokens (the test
+   harness mints them with `mid-issuer`/`kms-client` from the same pinned rev).
 
-   **Accepted cost (M2 decision — "accept the heavy tree for now"):** the chain
-   `mid-verify → mid-issuer → kms-client` drags a full async HTTP/TLS stack
-   (`reqwest`/`tokio`/`hyper`/`rustls`/`ring`, ~306 crates) into Deputy's identity path, even
-   though verification makes zero network calls. Root cause: `mid-issuer` hard-depends on
-   `kms-client` (the *signing*/nonce-HTTP side) only for the `DeviceSigner` trait. `cargo deny`
-   was adjusted accordingly: `CDLA-Permissive-2.0` allowed (webpki-roots), the unlicensed mata
-   crates clarified as MIT, and `wildcards` downgraded to `warn` (the mata chain uses external
-   path-dep wildcards).
+   **Portability — resolved for mID.** The workspace no longer requires a local `mata-master`
+   checkout to build the identity path; `cargo` fetches the pinned rev. (`cargo fmt --all` no
+   longer escapes into mata-master via this dep — though SpaceDB is still a `mata-master` path
+   dep, so keep using scoped `-p` flags until that also moves to git.) `cargo deny` trusts the
+   `Remade-With-Rust` GitHub org as a first-party source (`[sources.allow-org]`).
 
-   **Still open (two follow-ups):**
-   - *Slim it:* feature-gate `kms-client`'s `reqwest` (or split a trait/types-only crate)
-     upstream in `mata-master`, so Deputy's verifier pulls only `p256`/`sha2`/`base64`/`bs58`.
-   - *Portability/CI:* the absolute local path means the workspace only resolves where
-     `mata-master` is checked out, so CI cannot build it as-is. Fix by vendoring the crates
-     under `./vendor`, a private git dep, or feature-gating the `mid` dependency. Also note
-     `cargo fmt --all` follows the path dep into mata-master and reformats it — format Deputy's
-     crates with explicit `-p` flags instead.
+   **Accepted cost (unchanged):** the chain `mid-verify → mid-issuer → kms-client` still drags a
+   full async HTTP/TLS stack (`reqwest`/`tokio`/`hyper`/`rustls`/`ring`) into the identity path,
+   even though verification makes zero network calls — `mid-issuer` hard-depends on `kms-client`
+   (the *signing*/nonce-HTTP side) only for the `DeviceSigner` trait. `cargo deny` allows
+   `CDLA-Permissive-2.0` (webpki-roots) accordingly.
+
+   **Still open (one follow-up):** *slim it* — feature-gate `kms-client`'s `reqwest` (or split a
+   trait/types-only crate) upstream, so Deputy's verifier pulls only `p256`/`sha2`/`base64`/`bs58`.
+
+1a. **mID is a runtime toggle — on by default, deactivatable.** The service surface gates on a
+   verified mID `Session` by default (`DeputyService::open`), but can run under a synthetic local
+   identity (`DeputyService::open_local`, DID `did:deputy:local`) for embedding Deputy in software
+   that owns its own auth, or for local development. The capability layer (§ SpaceDB Layer 5)
+   still gates every op in both modes. CLI: `deputy serve` requires `DEPUTY_MID_TOKEN`
+   (+ `DEPUTY_MID_NONCE`, and `DEPUTY_MID_AUDIENCE` if not the bind URL) by default; `--no-mid`
+   deactivates it. The `/health` endpoint reports `mid_active`. **The headless pipeline commands
+   (`acquire`/`scan`/`promote`/`gate`/`deploy`) carry no mID** — they operate on the local vault,
+   gated by passphrase possession; mID authenticates the *principal driving the API*, the
+   passphrase authenticates *local device access*.
 2. **Issuer side is absent from the JS.** We can verify but not see exactly how the wallet
    builds `self_signed_by_genesis_key`, assigns `signer_kid`, or formats `signed_at`. Test
    vectors must be validated against a real wallet-issued token before we trust the encoder.

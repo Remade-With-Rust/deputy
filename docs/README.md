@@ -14,7 +14,7 @@ These are the "completed documents" referenced by the Morning Ritual in the root
 
 ## Status
 
-Design docs complete. **Roadmap M0–M6 are implemented** (the full pipeline, end to end):
+Design docs complete. **Roadmap M0–M7 are implemented — Deputy is feature-complete:**
 
 - **M0** — Cargo workspace + 12 `deputy-*` crates compile; `deputy-core` (domain types, the
   artifact state machine, trait contracts) is real and tested (7 tests).
@@ -37,12 +37,15 @@ Design docs complete. **Roadmap M0–M6 are implemented** (the full pipeline, en
   `deputy gate` / `deputy deploy` CLI + a GitHub Action gate template. Dogfooded the full loop:
   a real project built `--offline` against Deputy's vendored, owned `itoa`; the gate blocked a
   quarantined dep.
+- **M7** — `deputy-api` (`DeputyService` + axum HTTP server, mID-session-gated; 4 tests),
+  `deputy serve` CLI, and `deputy-ui` (a Dioxus 0.7 wasm web app — sign-in + gate/analysis
+  dashboards, a pure API client). API live-verified via curl.
 
-The full mission pipeline now runs end to end — **acquire → analyze → scan → promote → gate →
-deploy**. Locally green: clippy `-D warnings`, scoped fmt, `cargo deny`, **65 tests total**.
-Two open caveats from M2's vendoring (heavy dep tree + the absolute path dep blocking CI) are
-tracked in [AUTH.md §10](./AUTH.md). The remaining milestone is **M7 (API server + Dioxus UI)**;
-`deputy-api` and `deputy-ui` are still placeholders. See [ROADMAP.md](./ROADMAP.md).
+The full mission pipeline runs end to end — **acquire → analyze → scan → promote → gate →
+deploy** — drivable from the CLI, the HTTP API, and the UI. Locally green: clippy `-D warnings`
+(host + wasm), scoped fmt, `cargo deny`, **69 tests total**. Two open caveats from M2's
+vendoring (heavy dep tree + the absolute path dep blocking CI) are tracked in
+[AUTH.md §10](./AUTH.md). See [ROADMAP.md](./ROADMAP.md).
 
 ## Decisions locked (2026-06-24)
 

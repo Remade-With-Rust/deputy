@@ -1,0 +1,7 @@
+# Dioxus CLI config. Run the UI with:  dx serve --platform web
+# (start the Deputy API first:  deputy serve)
+[application]
+name = "deputy-ui"
+
+[web.app]
+title = "Deputy"

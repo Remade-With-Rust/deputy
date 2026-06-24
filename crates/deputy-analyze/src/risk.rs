@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 
+use serde::Serialize;
+
 use crate::inspect::CrateFacts;
 use crate::language::Language;
 
 /// A critical-point-of-failure score for one dependency, with the human-readable reasons that
 /// produced it. Higher = more damage if this crate is compromised (`docs/PIPELINE.md` §3).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RiskScore {
     pub name: String,
     pub version: String,
@@ -25,7 +27,7 @@ pub struct RiskScore {
 }
 
 /// Aggregate language line counts across all inspected crates.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct LanguageReport {
     pub by_language: BTreeMap<Language, usize>,
     pub crates_analyzed: usize,
@@ -38,7 +40,7 @@ impl LanguageReport {
 }
 
 /// The full output of an analysis run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AnalysisReport {
     pub language_report: LanguageReport,
     /// Risk scores, sorted descending (most critical first).

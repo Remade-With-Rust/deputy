@@ -7,21 +7,24 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# Not publishable yet: depends on the not-yet-public `mid-verify` via a local path.
-# See docs/AUTH.md §10.
+# Depends on the public MATA mID crates by git, so the workspace no longer requires a local
+# mata-master checkout. Not yet on crates.io, so still publish=false (see docs/AUTH.md §10).
 publish = false
 
 [dependencies]
-# Vendored MATA mID reference (RP-side verification), the authoritative source the JS SDK
-# mirrors. Chain: mid-verify -> mid-issuer -> kms-client (pulls reqwest/tokio; see AUTH.md §10).
-mid-verify = { path = "../../../mata-master/packages/mid-verify" }
+# The public MATA mID reference (RP-side verification) — github.com/Remade-With-Rust/mid, the
+# authoritative source the JS SDK (@matanetwork/sovereign-id) mirrors. Pinned to a rev: Deputy
+# practises its own thesis and never tracks a moving branch for a trust-base dependency. Chain:
+# mid-verify -> mid-issuer -> kms-client (pulls reqwest/tokio; see AUTH.md §10).
+mid-verify = { git = "https://github.com/Remade-With-Rust/mid", rev = "a31b9b48f53f82defdba49ca743e4eaf930fbca7" }
 thiserror = { workspace = true }
 getrandom = "0.3"
 
 [dev-dependencies]
-# Token-minting harness for tests: mint real wallet-style mID tokens, then verify them.
-mid-issuer = { path = "../../../mata-master/packages/mid-issuer" }
-kms-client = { path = "../../../mata-master/packages/kms-client" }
+# Token-minting harness for tests: mint real wallet-style mID tokens, then verify them. Same
+# pinned rev as the verifier so the canonical wire format matches exactly.
+mid-issuer = { git = "https://github.com/Remade-With-Rust/mid", rev = "a31b9b48f53f82defdba49ca743e4eaf930fbca7" }
+kms-client = { git = "https://github.com/Remade-With-Rust/mid", rev = "a31b9b48f53f82defdba49ca743e4eaf930fbca7" }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 sha2 = "0.10"
 base64 = "0.22"

@@ -1,13 +1,12 @@
 use deputy_core::{ArtifactRef, ContentHash, MetadataStore, ScanVerdict, StoreKind};
-use deputy_crypto::{open, seal};
-use redb::TableDefinition;
+use spacedb_store::{Durability, KvEngine, WriteTx};
 
 use crate::error::{Result, StoreError};
 use crate::vault::Vault;
 
-/// Single key/value table. Keys are namespaced strings (e.g. `verdict:<eco>:<hash>`); values
-/// are AEAD-sealed under the metadata subkey, so the database file leaks nothing in the clear.
-const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("deputy_meta");
+// Keys are namespaced strings (e.g. `verdict:<eco>:<hash>`); values are plaintext bytes, which
+// SpaceDB's collection AES-256-GCM-encrypts under the per-collection DEK before writing. The DB
+// therefore leaks nothing in the clear, and Deputy no longer seals metadata itself.
 
 fn verdict_key(artifact: &ArtifactRef) -> String {
     format!("verdict:{}:{}", artifact.ecosystem, artifact.hash)
@@ -29,47 +28,54 @@ fn db_err(e: impl std::fmt::Display) -> StoreError {
 }
 
 impl Vault {
-    fn put_meta(&self, key: &str, sealed: &[u8]) -> Result<()> {
-        let txn = self.db().begin_write().map_err(db_err)?;
-        {
-            let mut table = txn.open_table(META_TABLE).map_err(db_err)?;
-            table.insert(key, sealed).map_err(db_err)?;
-        }
+    fn put_meta(&self, key: &str, value: &[u8]) -> Result<()> {
+        // The collection encrypts `value` under its DEK; Immediate durability fsyncs the commit.
+        let mut txn = self
+            .db()
+            .begin_write(Durability::Immediate)
+            .map_err(db_err)?;
+        self.meta()
+            .put(&mut txn, &key.to_owned(), &value.to_vec())
+            .map_err(db_err)?;
         txn.commit().map_err(db_err)?;
         Ok(())
     }
 
     fn get_meta(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        // The collection decrypts the row; a missing key returns `None` without touching the KEK.
         let txn = self.db().begin_read().map_err(db_err)?;
-        let table = match txn.open_table(META_TABLE) {
-            Ok(table) => table,
-            // No writes have happened yet, so the table doesn't exist: treat as empty.
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
-            Err(e) => return Err(db_err(e)),
-        };
-        match table.get(key).map_err(db_err)? {
-            Some(guard) => Ok(Some(guard.value().to_vec())),
-            None => Ok(None),
-        }
+        self.meta().get(&txn, &key.to_owned()).map_err(db_err)
+    }
+
+    /// All metadata entries `(key, plaintext value)`, decrypted — the input to CRDT sync.
+    pub(crate) fn metadata_entries(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let txn = self.db().begin_read().map_err(db_err)?;
+        // The string codec is order-preserving, so `["", high)` spans every key.
+        let high = "\u{10FFFF}".to_owned();
+        self.meta()
+            .range(&txn, &String::new(), &high)
+            .map_err(db_err)
+    }
+
+    /// Write a metadata entry (used by the sync merge); encrypted by the collection.
+    pub(crate) fn put_metadata(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.put_meta(key, value)
     }
 
     /// Record a scan verdict for an artifact, sealed under the metadata subkey.
     pub fn put_verdict(&self, artifact: &ArtifactRef, verdict: &ScanVerdict) -> Result<()> {
         let key = verdict_key(artifact);
         let plain = serde_json::to_vec(verdict)?;
-        let sealed = seal(self.meta_key(), &plain, key.as_bytes())?;
-        self.put_meta(&key, &sealed)
+        self.put_meta(&key, &plain)
     }
 
     /// Fetch a previously recorded scan verdict, if any.
     pub fn get_verdict(&self, artifact: &ArtifactRef) -> Result<Option<ScanVerdict>> {
         let key = verdict_key(artifact);
-        let Some(sealed) = self.get_meta(&key)? else {
+        let Some(plain) = self.get_meta(&key)? else {
             return Ok(None);
         };
-        let plain = open(self.meta_key(), &sealed, key.as_bytes())?;
-        let verdict = serde_json::from_slice(&plain)?;
-        Ok(Some(verdict))
+        Ok(Some(serde_json::from_slice(&plain)?))
     }
 
     /// Record the content hash a crate `name@version` resolves to within a store. The prod
@@ -83,8 +89,7 @@ impl Vault {
         hash: &ContentHash,
     ) -> Result<()> {
         let key = crate_index_key(kind, name, version);
-        let sealed = seal(self.meta_key(), hash.to_hex().as_bytes(), key.as_bytes())?;
-        self.put_meta(&key, &sealed)
+        self.put_meta(&key, hash.to_hex().as_bytes())
     }
 
     /// The content hash recorded for `name@version` in a store, if any.
@@ -95,10 +100,9 @@ impl Vault {
         version: &str,
     ) -> Result<Option<ContentHash>> {
         let key = crate_index_key(kind, name, version);
-        let Some(sealed) = self.get_meta(&key)? else {
+        let Some(plain) = self.get_meta(&key)? else {
             return Ok(None);
         };
-        let plain = open(self.meta_key(), &sealed, key.as_bytes())?;
         let hex = std::str::from_utf8(&plain)
             .map_err(|_| StoreError::Malformed("crate-index value is not UTF-8".to_owned()))?;
         let hash = ContentHash::from_sha256_hex(hex)
@@ -107,7 +111,7 @@ impl Vault {
     }
 }
 
-/// The API-first [`MetadataStore`] contract, satisfied by the encrypted redb store.
+/// The API-first [`MetadataStore`] contract, satisfied by the encrypted SpaceDB-backed store.
 impl MetadataStore for Vault {
     fn record_verdict(
         &self,

@@ -1,9 +1,10 @@
 use crate::error::{Error, Result};
+use serde::{Serialize, Serializer};
 use std::fmt;
 
 /// Hash algorithm used for content addressing. SHA-256 today; the enum exists so the
 /// on-disk address format (`<algo>:<hex>`) can evolve without ambiguity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[non_exhaustive]
 pub enum HashAlgo {
     Sha256,
@@ -89,9 +90,16 @@ impl fmt::Display for ContentHash {
     }
 }
 
+impl Serialize for ContentHash {
+    /// Serializes as the canonical `<algo>:<hex>` string for clean API JSON.
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
 /// A supported dependency ecosystem. Cargo is the first beachhead
 /// (`docs/ARCHITECTURE.md` §7); npm/PyPI/Go follow via the `DepEcosystem` trait.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[non_exhaustive]
 pub enum EcosystemId {
     Cargo,
@@ -114,7 +122,7 @@ impl fmt::Display for EcosystemId {
 macro_rules! string_newtype {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
         pub struct $name(String);
 
         impl $name {
@@ -164,7 +172,7 @@ string_newtype!(
 );
 
 /// A reference to a specific dependency at a specific version within an ecosystem.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct DepRef {
     pub ecosystem: EcosystemId,
     pub name: DepName,
@@ -173,14 +181,14 @@ pub struct DepRef {
 
 /// A `DepRef` bound to the exact content hash we expect to download — the pin that makes
 /// acquisition tamper-evident (`docs/PIPELINE.md` §2).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct Pin {
     pub dep: DepRef,
     pub expected: ContentHash,
 }
 
 /// A handle to a stored artifact: its ecosystem plus its content address.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct ArtifactRef {
     pub ecosystem: EcosystemId,
     pub hash: ContentHash,

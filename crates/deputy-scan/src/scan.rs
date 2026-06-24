@@ -2,12 +2,13 @@ use deputy_analyze::inspect;
 use deputy_core::{ArtifactRef, Finding, Pin, Result, ScanVerdict, Severity, StoreKind};
 use deputy_store::{StoreError, Vault};
 use semver::Version;
+use serde::Serialize;
 
 use crate::advisory::AdvisoryDb;
 
 /// The result of scanning a dirty artifact: the blocking [`ScanVerdict`] plus non-blocking
 /// informational notes (capability surface, skipped checks).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ScanReport {
     pub verdict: ScanVerdict,
     pub notes: Vec<String>,

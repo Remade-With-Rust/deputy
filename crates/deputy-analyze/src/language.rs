@@ -1,8 +1,9 @@
+use serde::Serialize;
 use std::fmt;
 
 /// A source language, classified by file extension. Memory-unsafe native languages (C/C++/asm)
 /// are tracked distinctly because their presence in a dependency raises its risk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum Language {
     Rust,
     C,

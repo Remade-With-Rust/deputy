@@ -34,6 +34,13 @@ impl SubKey {
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Copy the raw 32-byte key out for interop with an external key provider — e.g. as the
+    /// vault key (KEK) handed to SpaceDB's `KeyProvider`, which wraps a per-collection DEK under
+    /// it. Use sparingly: this deliberately moves the key material out of the zeroizing wrapper.
+    pub fn expose_bytes(&self) -> [u8; 32] {
+        self.0
+    }
 }
 
 impl core::fmt::Debug for SubKey {

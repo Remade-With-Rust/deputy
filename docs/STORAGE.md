@@ -40,9 +40,11 @@ Two layers, both required by `README.md`:
   parallelism) are stored in `keys/master.kdf` alongside the salt and a key *verifier* (an
   AEAD encryption of a known constant) so we can detect a wrong secret without storing the
   key. **The MK is never written to disk** — derived into memory on unlock, zeroized on lock.
-- **AEAD:** AES-256-GCM seals every artifact and every metadata record. Each sealed blob is
-  `nonce ‖ ciphertext ‖ tag`. Nonces are 96-bit, random per blob (we never reuse a nonce
-  under a given subkey — see §3 for the per-blob subkey scheme that makes this safe at scale).
+- **AEAD:** AES-256-GCM protects everything at rest. **Artifacts and the audit log** are sealed
+  directly by Deputy (`nonce ‖ ciphertext ‖ tag`, 96-bit random nonces). **Metadata** is
+  encrypted by SpaceDB's collection layer instead: `K_meta` is the *key-encryption key (KEK)*
+  that wraps a per-collection *data-encryption key (DEK)*, and SpaceDB AES-256-GCM-encrypts each
+  metadata row under the DEK (see §4). Deputy no longer seals metadata rows itself.
 
 ### Key hierarchy
 
@@ -53,9 +55,11 @@ user passphrase ──Argon2id(salt, params)──▶  Master Key (MK)  [memory 
                           ┌───────────────────────────────┼───────────────────────────┐
                           ▼                                ▼                            ▼
                   K_store ("store")             K_meta ("metadata")          K_audit ("audit")
-                          │                                                  
-            per-artifact subkey =                                           
-            HKDF(K_store, content_hash)  ──▶ seal artifact bytes            
+                          │                          │ = SpaceDB vault key (KEK)
+            per-artifact subkey =                    ▼ wraps a per-collection DEK
+            HKDF(K_store, content_hash)         SpaceDB encrypts metadata rows under the DEK
+                          ▼
+              seal artifact bytes (Deputy)     K_audit ──▶ seal audit records (Deputy)
 ```
 
 Deriving a **per-artifact subkey from the content hash** means each artifact is encrypted
@@ -82,17 +86,25 @@ already store.
 Requirements: embedded (no server), encryptable at rest, transactional (promotion must be
 atomic), queryable for the dependency graph.
 
-- **Chosen:** `redb` (pure-Rust embedded KV, ACID) with **application-level AEAD** — each
-  value is sealed with K_meta before write, so the DB file leaks nothing in the clear. Keeps
-  us pure-Rust and puts encryption under our control. This is also the project requirement:
-  *use redb on local devices until spacedb is available*. `redb` sits behind the
-  `MetadataStore` contract, so swapping in spacedb later is a single-crate change.
-- **Rejected:** SQLite/SQLCipher — pulls in a C library (tension with "Rust everywhere") and
-  a less transparent crypto boundary.
+- **Chosen: SpaceDB Layer 0** (`spacedb-store`, Remade With Rust) — the engine-agnostic,
+  transactional, order-preserving KV store, on its durable `RedbEngine` (redb is now an
+  *internal engine detail* of SpaceDB, not a direct Deputy dep), `Durability::Immediate` (fsync)
+  on writes. This fulfils the requirement *use redb until spacedb is available*.
+- **Encryption: SpaceDB's native per-collection AEAD.** Deputy opens an encrypted
+  `Collection<String, Vec<u8>>`; `K_meta` is the **KEK** (`StaticKeyProvider`) under which
+  SpaceDB wraps a fresh per-collection **DEK**, then AES-256-GCM-encrypts each row (AAD =
+  collection name + key + schema version). Deputy stores **plaintext** values and lets SpaceDB
+  encrypt — it no longer seals metadata itself. (Tested: a value marker never appears in the
+  on-disk `meta.db`.)
+- **History:** M1 shipped on `redb` + Deputy's manual seal; we then swapped the engine to
+  SpaceDB, then adopted SpaceDB's native encryption — each step a single-crate change in
+  `deputy-store`, exactly as the `MetadataStore` abstraction promised. SQLite/SQLCipher was
+  rejected (C library; opaque crypto boundary).
+- **Available next:** SpaceDB's higher layers (CRDT, replica, durability modes) — deferred.
 
-**Status (M1):** implemented. Keys are namespaced strings (`verdict:<eco>:<hash>`); values are
-AEAD-sealed (AAD = the key). The graph is small (thousands of nodes), so KV + in-memory query
-is sufficient.
+**Status:** implemented on SpaceDB with native row encryption. Keys are namespaced strings
+(`verdict:<eco>:<hash>`, `crate:<store>:<name>:<version>`); values are DEK-encrypted by SpaceDB.
+The graph is small (thousands of nodes), so KV + in-memory query is sufficient.
 
 ## 5. Integrity & append-only guarantees
 
@@ -112,11 +124,30 @@ is sufficient.
 3. **Lock:** explicit lock, session expiry, or process exit zeroizes MK and all subkeys. After
    lock, the on-disk store is opaque without re-deriving the MK.
 
-## 7. Open questions
+## 7. SpaceDB layers (beyond Layer 0)
+
+Deputy builds on SpaceDB (Remade With Rust) as more than a KV. Each layer slots in behind an
+existing seam, so the rest of Deputy is unaffected:
+
+| Layer | SpaceDB crate | In Deputy | Surface |
+|---|---|---|---|
+| **0** storage | `spacedb-store` | the durable, transactional metadata KV (redb engine) | — |
+| **1+3** CRDT/consistency | `spacedb-crdt` | metadata as LWW registers in a `CrdtDoc`; conflict-free **multi-device sync** (export/import; new entries union, same key resolves LWW) | `deputy sync export/import` |
+| **2 cold** durability | `spacedb-durability` | Reed-Solomon erasure-coded **vault snapshots** (k-of-n recovery; survives lost shards) | `deputy snapshot` / `deputy restore` |
+| **2 hot** replica | `spacedb-replica` | the delta primitive (`state_vector`/`encode_update_since`) is in place; the **live always-on transport** is the documented networked extension (a daemon, not the CLI's model) | — |
+| **5** access | `spacedb-access` | every API op gated by a **signed, scoped, expiring, revocable capability** (P-256, mID family) — for humans AND AI agents | `DeputyService::grant` / `revoke` |
+
+Encryption boundaries: metadata rows are encrypted by SpaceDB's per-collection DEK (KEK =
+`K_meta`, §2/§4). Snapshots archive the already-encrypted vault files (no passphrase needed).
+The CRDT sync blob is a **portable, unencrypted** update — transfer it over a secure channel
+between your own devices (a future revision derives a shared sync key from the user's mID).
+
+## 8. Open questions
 
 - [x] mID vs. the Argon2id secret: **resolved** — separate factors. Passphrase derives the key;
       mID session gates unlock ([AUTH.md §8](./AUTH.md)). Optional future: bind a passphrase-wrapping
       factor to an mID device key.
+- [ ] Shared sync key from the user's mID, so the CRDT sync blob can be encrypted across devices.
 - [ ] Key rotation: re-seal under a new MK without exposing plaintext to disk (stream re-seal).
 - [ ] Deliberate trade-off to confirm with the user: **lost secret ⇒ unrecoverable store**
       (no backdoor). Optional, explicitly-opt-in escrow is a possible future feature, not a default.

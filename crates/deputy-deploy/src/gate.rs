@@ -2,9 +2,10 @@ use std::collections::HashSet;
 
 use deputy_core::{ArtifactRef, Pin, Result, ScanVerdict, StoreKind};
 use deputy_store::Vault;
+use serde::Serialize;
 
 /// A single reason a dependency failed the gate.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GateViolation {
     pub name: String,
     pub version: String,
@@ -12,7 +13,7 @@ pub struct GateViolation {
 }
 
 /// The decision of the fail-closed deploy gate.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum GateDecision {
     /// Every dependency is promoted, clean, and receipted. Carries the count cleared.
     Allowed { cleared: usize },

@@ -8,7 +8,7 @@
 //! - **Content-addressed artifact stores** (dirty + prod). Every artifact is sealed with
 //!   AES-256-GCM under a per-artifact subkey, addressed by the SHA-256 of its bytes, with the
 //!   content address bound in as AEAD additional data.
-//! - **Encrypted metadata** (`redb`): scan verdicts and other records, each value sealed
+//! - **Encrypted metadata** (SpaceDB Layer 0 KV): scan verdicts and other records, each sealed
 //!   under the metadata subkey.
 //! - **Hash-chained audit log**: append-only, tamper-evident provenance.
 //!
@@ -20,6 +20,8 @@ mod artifacts;
 mod audit;
 mod error;
 mod meta;
+mod snapshot;
+mod sync;
 mod vault;
 
 #[cfg(test)]
@@ -27,6 +29,8 @@ mod tests;
 
 pub use audit::AuditEntry;
 pub use error::{Result, StoreError};
+pub use snapshot::{restore, snapshot, RestoreInfo, SnapshotInfo};
+pub use sync::{export_metadata, import_metadata, SyncReport};
 pub use vault::Vault;
 
 // Re-export the storage-relevant core vocabulary so callers need only depend on this crate.

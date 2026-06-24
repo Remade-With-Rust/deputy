@@ -12,10 +12,11 @@
 
 use deputy_core::{ContentHash, DepEcosystem, Result, SourceId, StoreKind};
 use deputy_store::Vault;
+use serde::Serialize;
 use serde_json::json;
 
 /// A successfully acquired crate.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AcquiredCrate {
     pub name: String,
     pub version: String,
@@ -23,7 +24,7 @@ pub struct AcquiredCrate {
 }
 
 /// A crate that could not be acquired (fetch error or integrity mismatch).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AcquireFailure {
     pub name: String,
     pub version: String,
@@ -31,7 +32,7 @@ pub struct AcquireFailure {
 }
 
 /// The outcome of an acquisition run.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct AcquireReport {
     pub acquired: Vec<AcquiredCrate>,
     pub already_present: usize,

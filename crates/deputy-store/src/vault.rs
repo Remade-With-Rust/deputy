@@ -6,6 +6,8 @@ use deputy_crypto::{
     SubKey,
 };
 use serde::{Deserialize, Serialize};
+use spacedb_store::{Collection, KeyProvider, RedbEngine, StaticKeyProvider};
+use std::sync::Arc;
 
 use crate::error::{Result, StoreError};
 
@@ -25,10 +27,17 @@ struct MasterKdfFile {
 pub struct Vault {
     root: PathBuf,
     store_key: SubKey,
-    meta_key: SubKey,
     audit_key: SubKey,
-    db: redb::Database,
+    db: RedbEngine,
+    /// Encrypted metadata: a SpaceDB collection whose per-collection DEK is wrapped under the
+    /// metadata-domain subkey (the KEK). SpaceDB AES-256-GCM-encrypts every row.
+    meta: Collection<String, Vec<u8>>,
 }
+
+/// The SpaceDB collection holding all of Deputy's metadata, and the schema version bound into
+/// each row's AEAD (bump only with a migration).
+pub(crate) const META_COLLECTION: &str = "deputy_meta";
+pub(crate) const META_SCHEMA: u32 = 1;
 
 impl Vault {
     /// Initialize a brand-new vault rooted at `root`, protected by `passphrase`. Fails with
@@ -40,7 +49,7 @@ impl Vault {
     /// keys/master.kdf      Argon2id params + verifier (no key)
     /// store/dirty/         sealed staging artifacts (content-addressed)
     /// store/prod/          sealed promoted artifacts (content-addressed, append-only)
-    /// store/meta.db        encrypted metadata (redb)
+    /// store/meta.db        encrypted metadata (SpaceDB Layer 0 KV)
     /// logs/audit.log       hash-chained append-only provenance
     /// ```
     pub fn create(root: impl AsRef<Path>, passphrase: &[u8]) -> Result<Self> {
@@ -91,16 +100,24 @@ impl Vault {
 
     fn from_master(root: PathBuf, master: &MasterKey) -> Result<Self> {
         let store_key = derive_subkey(master, KeyDomain::Store);
-        let meta_key = derive_subkey(master, KeyDomain::Meta);
         let audit_key = derive_subkey(master, KeyDomain::Audit);
-        let db = redb::Database::create(root.join("store").join("meta.db"))
+
+        let db = RedbEngine::open(root.join("store").join("meta.db"))
             .map_err(|e| StoreError::Db(e.to_string()))?;
+
+        // The metadata-domain subkey is the SpaceDB vault key (KEK); SpaceDB wraps a fresh
+        // per-collection DEK under it and encrypts every metadata row with that DEK.
+        let kek = derive_subkey(master, KeyDomain::Meta);
+        let provider: Arc<dyn KeyProvider> = Arc::new(StaticKeyProvider::new(kek.expose_bytes()));
+        let meta = Collection::open_or_create(&db, provider, META_COLLECTION, META_SCHEMA)
+            .map_err(|e| StoreError::Db(e.to_string()))?;
+
         Ok(Self {
             root,
             store_key,
-            meta_key,
             audit_key,
             db,
+            meta,
         })
     }
 
@@ -116,16 +133,16 @@ impl Vault {
         &self.store_key
     }
 
-    pub(crate) fn meta_key(&self) -> &SubKey {
-        &self.meta_key
-    }
-
     pub(crate) fn audit_key(&self) -> &SubKey {
         &self.audit_key
     }
 
-    pub(crate) fn db(&self) -> &redb::Database {
+    pub(crate) fn db(&self) -> &RedbEngine {
         &self.db
+    }
+
+    pub(crate) fn meta(&self) -> &Collection<String, Vec<u8>> {
+        &self.meta
     }
 }
 

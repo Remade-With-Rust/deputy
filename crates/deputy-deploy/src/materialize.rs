@@ -6,11 +6,12 @@ use std::path::{Component, Path, PathBuf};
 use deputy_core::{ContentHash, Error, Pin, Result, StoreKind};
 use deputy_store::{StoreError, Vault};
 use flate2::read::GzDecoder;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
 /// One crate written into the vendor tree.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MaterializedCrate {
     pub name: String,
     pub version: String,
@@ -20,7 +21,7 @@ pub struct MaterializedCrate {
 }
 
 /// The outcome of materializing prod into a source tree.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MaterializePlan {
     pub vendor_dir: PathBuf,
     pub config_path: PathBuf,

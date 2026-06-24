@@ -6,12 +6,14 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use deputy_acquire::acquire;
 use deputy_analyze::analyze;
+use deputy_api::{serve_blocking, DeputyService, Session, VerifyParams};
 use deputy_core::{ContentHash, Pin, SourceId, StoreKind};
 use deputy_deploy::{gate, materialize, promote, GateDecision, Promotion};
 use deputy_ecosystem::CargoEcosystem;
@@ -106,6 +108,71 @@ enum Command {
         #[arg(long)]
         vault: Option<PathBuf>,
     },
+    /// Serve the localhost API (the surface the Dioxus UI and AI agents drive).
+    ///
+    /// mID is ON by default: set DEPUTY_MID_TOKEN (+ DEPUTY_MID_NONCE, and DEPUTY_MID_AUDIENCE if
+    /// it isn't the bind URL) to the wallet token, which is verified before the service opens.
+    /// Pass --no-mid to deactivate mID and run under a local identity instead.
+    Serve {
+        /// Deputy home directory. Defaults to $HOME/.deputy.
+        #[arg(long)]
+        vault: Option<PathBuf>,
+        /// Loopback port to bind.
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+        /// Deactivate mID: open under a local identity, with no token required.
+        #[arg(long)]
+        no_mid: bool,
+    },
+    /// Snapshot the vault into Reed-Solomon erasure-coded shards (durable backup; no passphrase
+    /// needed — it archives the already-encrypted files).
+    Snapshot {
+        /// Deputy home directory. Defaults to $HOME/.deputy.
+        #[arg(long)]
+        vault: Option<PathBuf>,
+        /// Directory to write the manifest + shards into.
+        #[arg(long)]
+        into: PathBuf,
+        /// Number of data shards (also the number required to restore).
+        #[arg(long, default_value_t = 4)]
+        data: usize,
+        /// Number of parity shards (also the number of shard losses tolerated).
+        #[arg(long, default_value_t = 2)]
+        parity: usize,
+    },
+    /// Reconstruct a vault from a snapshot directory (needs at least `data` of the shards).
+    Restore {
+        /// Snapshot directory (manifest + shards).
+        #[arg(long)]
+        from: PathBuf,
+        /// Deputy home directory to restore into (must not already hold a vault).
+        #[arg(long)]
+        vault: Option<PathBuf>,
+    },
+    /// Conflict-free multi-device metadata sync (CRDT). Export this vault's metadata as a
+    /// portable update, or merge another device's update into this vault.
+    Sync {
+        #[command(subcommand)]
+        action: SyncAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SyncAction {
+    /// Export this vault's metadata to a portable CRDT update file.
+    Export(SyncArgs),
+    /// Merge another device's CRDT update file into this vault.
+    Import(SyncArgs),
+}
+
+#[derive(Args)]
+struct SyncArgs {
+    /// The CRDT update file to write (export) or read (import).
+    #[arg(long)]
+    file: PathBuf,
+    /// Deputy home directory. Defaults to $HOME/.deputy.
+    #[arg(long)]
+    vault: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -129,7 +196,185 @@ fn main() -> ExitCode {
             into,
             vault,
         } => run_deploy(&source, into, vault),
+        Command::Serve {
+            vault,
+            port,
+            no_mid,
+        } => run_serve(vault, port, no_mid),
+        Command::Snapshot {
+            vault,
+            into,
+            data,
+            parity,
+        } => run_snapshot(vault, into, data, parity),
+        Command::Restore { from, vault } => run_restore(from, vault),
+        Command::Sync { action } => run_sync(action),
     }
+}
+
+fn run_sync(action: SyncAction) -> ExitCode {
+    let (args, exporting) = match action {
+        SyncAction::Export(args) => (args, true),
+        SyncAction::Import(args) => (args, false),
+    };
+    let vault = match open_vault_from_env(args.vault) {
+        Ok(v) => v,
+        Err(e) => return fail(&e),
+    };
+
+    if exporting {
+        match deputy_store::export_metadata(&vault) {
+            Ok(update) => match std::fs::write(&args.file, &update) {
+                Ok(()) => {
+                    println!(
+                        "exported {} bytes of metadata -> {}",
+                        update.len(),
+                        args.file.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(&format!("write {}: {e}", args.file.display())),
+            },
+            Err(e) => fail(&format!("export failed: {e}")),
+        }
+    } else {
+        let update = match std::fs::read(&args.file) {
+            Ok(u) => u,
+            Err(e) => return fail(&format!("read {}: {e}", args.file.display())),
+        };
+        match deputy_store::import_metadata(&vault, &update) {
+            Ok(report) => {
+                println!(
+                    "merged — {} metadata entries after sync",
+                    report.merged_entries
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&format!("import failed: {e}")),
+        }
+    }
+}
+
+fn run_snapshot(vault_dir: Option<PathBuf>, into: PathBuf, data: usize, parity: usize) -> ExitCode {
+    let dir = match vault_dir.or_else(default_vault_dir) {
+        Some(d) => d,
+        None => return fail("could not determine a vault directory; pass --vault"),
+    };
+    match deputy_store::snapshot(&dir, &into, data, parity) {
+        Ok(info) => {
+            println!(
+                "snapshot: {} shards ({} data + {} parity, {} archived bytes) -> {}",
+                info.total_shards,
+                info.data_shards,
+                info.parity_shards,
+                info.archive_bytes,
+                into.display()
+            );
+            println!("tolerates up to {parity} lost shard(s).");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("snapshot failed: {e}")),
+    }
+}
+
+fn run_restore(from: PathBuf, vault_dir: Option<PathBuf>) -> ExitCode {
+    let dir = match vault_dir.or_else(default_vault_dir) {
+        Some(d) => d,
+        None => return fail("could not determine a vault directory; pass --vault"),
+    };
+    match deputy_store::restore(&from, &dir) {
+        Ok(info) => {
+            println!(
+                "restored {} files from {} shard(s) -> {}",
+                info.files_restored,
+                info.shards_used,
+                dir.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("restore failed: {e}")),
+    }
+}
+
+fn run_serve(vault_dir: Option<PathBuf>, port: u16, no_mid: bool) -> ExitCode {
+    let passphrase = match std::env::var("DEPUTY_PASSPHRASE") {
+        Ok(p) if !p.is_empty() => p,
+        _ => return fail("set DEPUTY_PASSPHRASE to the vault passphrase"),
+    };
+    let dir = match vault_dir.or_else(default_vault_dir) {
+        Some(d) => d,
+        None => return fail("could not determine a vault directory; pass --vault"),
+    };
+    // Ensure the vault exists before the service unlocks it.
+    if let Err(e) = open_or_create_vault(&dir, passphrase.as_bytes()) {
+        return fail(&format!("opening vault at {}: {e}", dir.display()));
+    }
+
+    let service = if no_mid {
+        // mID deactivated: a local identity, no token. Anyone with the passphrase can drive it.
+        eprintln!(
+            "deputy: WARNING — mID is DEACTIVATED (--no-mid); serving under a local identity. \
+             Access is gated only by the passphrase."
+        );
+        DeputyService::open_local(&dir, passphrase.as_bytes())
+    } else {
+        // mID active (default): verify a wallet token into a Session before opening.
+        let session = match session_from_mid_env(port) {
+            Ok(s) => s,
+            Err(e) => return fail(&e),
+        };
+        println!(
+            "deputy: mID verified for {} — serving as the mID owner.",
+            session.did
+        );
+        DeputyService::open(&dir, passphrase.as_bytes(), session, unix_now())
+    };
+    let service = match service {
+        Ok(s) => s,
+        Err(e) => return fail(&format!("opening service: {e:?}")),
+    };
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    println!("deputy: serving the API on http://{addr}  (Ctrl-C to stop)");
+    match serve_blocking(service, addr) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(&format!("server error: {e}")),
+    }
+}
+
+/// Build a verified mID [`Session`] from the environment (the default, mID-active serve path).
+/// Requires `DEPUTY_MID_TOKEN` (the wallet JWS) and `DEPUTY_MID_NONCE` (the nonce it was minted
+/// against). The audience defaults to the bind URL unless `DEPUTY_MID_AUDIENCE` overrides it.
+fn session_from_mid_env(port: u16) -> Result<Session, String> {
+    let token = std::env::var("DEPUTY_MID_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    let Some(token) = token else {
+        return Err(
+            "mID is active: set DEPUTY_MID_TOKEN (+ DEPUTY_MID_NONCE) to a wallet token, \
+             or pass --no-mid to serve under a local identity"
+                .to_owned(),
+        );
+    };
+    let nonce = std::env::var("DEPUTY_MID_NONCE")
+        .ok()
+        .filter(|n| !n.is_empty())
+        .ok_or("set DEPUTY_MID_NONCE to the nonce the token was minted for")?;
+    let audience = std::env::var("DEPUTY_MID_AUDIENCE")
+        .ok()
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| format!("http://127.0.0.1:{port}"));
+
+    let params = VerifyParams::new(audience, nonce, unix_now());
+    deputy_api::verify(&token, &params).map_err(|e| format!("mID verification failed: {e}"))
+}
+
+/// Current wall-clock time in Unix seconds (saturating at 0 before the epoch).
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn run_gate(source: &Path, vault_dir: Option<PathBuf>) -> ExitCode {

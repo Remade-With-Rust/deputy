@@ -38,6 +38,12 @@ pub enum StoreError {
 
     #[error("malformed stored data: {0}")]
     Malformed(String),
+
+    #[error("snapshot error: {0}")]
+    Snapshot(String),
+
+    #[error("sync error: {0}")]
+    Sync(String),
 }
 
 impl From<StoreError> for deputy_core::Error {

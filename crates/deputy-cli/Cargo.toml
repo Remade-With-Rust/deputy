@@ -7,6 +7,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+# Bundles the API (which depends on the not-yet-public mid-verify) — see docs/AUTH.md §10.
+publish = false
 
 [[bin]]
 name = "deputy"
@@ -20,4 +22,5 @@ deputy-acquire = { path = "../deputy-acquire", version = "0.1.0" }
 deputy-analyze = { path = "../deputy-analyze", version = "0.1.0" }
 deputy-scan = { path = "../deputy-scan", version = "0.1.0" }
 deputy-deploy = { path = "../deputy-deploy", version = "0.1.0" }
+deputy-api = { path = "../deputy-api", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }

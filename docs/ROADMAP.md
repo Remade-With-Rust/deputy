@@ -102,11 +102,20 @@ early on so every capability is exercised headlessly (API-first) before any UI w
   real itoa-only project: gate ALLOWED → `deputy deploy` vendored prod `itoa` →
   `cargo build --offline` compiled **and ran** against Deputy's owned copy (no crates.io).
 
-## M7 — API server & Dioxus UI
-- `deputy-api`: localhost HTTP/IPC transport over the same traits the CLI uses.
-- `deputy-ui`: Dioxus app (web via WASM + native) — sign in with mID, connect GitHub,
-  dashboards for language analytics and critical points of failure, the staging→prod board.
-- **Exit:** the full flow is drivable from the UI; UI is a pure client of `deputy-api`.
+## M7 — API server & Dioxus UI ✅ Done
+- `deputy-api`: `DeputyService` (the canonical in-process surface the CLI/server/UI share) + a
+  localhost **axum** HTTP/JSON server. Opening is **mID-session-gated** — the M2 session↔unlock
+  composition lands here (a valid `Session` authorizes the unlock; the passphrase derives the
+  key). Endpoints: health, session, discover, acquire, analyze, scan, promote, gate, deploy.
+  (4 tests incl. an HTTP smoke test; live-verified via curl.)
+- `deputy serve` CLI runs the API (loopback-bound). Uses a local dev session for now; the
+  production path verifies a real mID token from the wallet (`deputy-id`).
+- `deputy-ui`: a **Dioxus 0.7** web app (wasm) — sign-in, source input, and the deploy-gate +
+  analysis dashboards, a pure HTTP client of `deputy-api`. Compiles to wasm32, clippy-clean; the
+  host build is a stub so `cargo build --workspace` stays green. Run with `dx serve --platform web`.
+- **Exit met:** the API drives the full pipeline (curl-verified: `/gate` → `{"Allowed":{"cleared":1}}`,
+  `/analyze` → full risk JSON); the UI is a pure API client. (Browser-interactive run is
+  documented via `dx serve`, not validated in this environment.)
 
 ## M8 — Hardening & docs
 - Threat-model review pass, fuzzing on parsers (lockfile, artifact), key rotation, revocation.

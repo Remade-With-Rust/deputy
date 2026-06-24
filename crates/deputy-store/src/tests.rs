@@ -223,3 +223,143 @@ fn crate_index_roundtrips_per_store_and_persists() {
         Some(hash)
     );
 }
+
+#[test]
+fn snapshot_survives_lost_shards_and_restores_a_working_vault() {
+    // Build a vault with some artifact + metadata state.
+    let (src_dir, vault) = fresh();
+    let hash = vault
+        .put_artifact(StoreKind::Dirty, b"important crate bytes")
+        .unwrap();
+    let artifact = ArtifactRef {
+        ecosystem: EcosystemId::Cargo,
+        hash: hash.clone(),
+    };
+    vault.put_verdict(&artifact, &ScanVerdict::Clean).unwrap();
+    drop(vault); // flush + release the meta.db
+
+    // Snapshot it: 4 data + 2 parity shards (tolerates 2 losses).
+    let snap_dir = TempDir::new().unwrap();
+    let info = crate::snapshot(src_dir.path(), snap_dir.path(), 4, 2).unwrap();
+    assert_eq!(info.total_shards, 6);
+
+    // Lose 2 shards (the parity budget).
+    let mut removed = 0;
+    for entry in std::fs::read_dir(snap_dir.path()).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name.starts_with("shard-") && removed < 2 {
+            std::fs::remove_file(&path).unwrap();
+            removed += 1;
+        }
+    }
+    assert_eq!(removed, 2);
+
+    // Restore into a fresh location and confirm it's a working vault.
+    let restore_dir = TempDir::new().unwrap();
+    let target = restore_dir.path().join("vault");
+    let restore_info = crate::restore(snap_dir.path(), &target).unwrap();
+    assert_eq!(
+        restore_info.shards_used, 4,
+        "reconstructed from the 4 surviving shards"
+    );
+
+    let restored = Vault::unlock(&target, PW).unwrap();
+    assert_eq!(
+        restored.get_artifact(StoreKind::Dirty, &hash).unwrap(),
+        b"important crate bytes"
+    );
+    assert_eq!(
+        restored.get_verdict(&artifact).unwrap(),
+        Some(ScanVerdict::Clean)
+    );
+}
+
+#[test]
+fn metadata_converges_across_two_vaults_via_crdt_sync() {
+    // Two devices (same passphrase, so they share the sync key) with distinct metadata.
+    let dir_a = TempDir::new().unwrap();
+    let vault_a = Vault::create(dir_a.path(), PW).unwrap();
+    let dir_b = TempDir::new().unwrap();
+    let vault_b = Vault::create(dir_b.path(), PW).unwrap();
+
+    let ha = vault_a
+        .put_artifact(StoreKind::Prod, b"alpha bytes")
+        .unwrap();
+    vault_a
+        .put_crate_hash(StoreKind::Prod, "alpha", "1.0.0", &ha)
+        .unwrap();
+    let hb = vault_b
+        .put_artifact(StoreKind::Prod, b"beta bytes")
+        .unwrap();
+    vault_b
+        .put_crate_hash(StoreKind::Prod, "beta", "2.0.0", &hb)
+        .unwrap();
+
+    // Bidirectional CRDT sync.
+    let from_a = crate::export_metadata(&vault_a).unwrap();
+    let from_b = crate::export_metadata(&vault_b).unwrap();
+    crate::import_metadata(&vault_b, &from_a).unwrap();
+    crate::import_metadata(&vault_a, &from_b).unwrap();
+
+    // Both vaults converge on the union of the two crate-index entries.
+    assert_eq!(
+        vault_a
+            .crate_hash(StoreKind::Prod, "alpha", "1.0.0")
+            .unwrap(),
+        Some(ha.clone())
+    );
+    assert_eq!(
+        vault_a
+            .crate_hash(StoreKind::Prod, "beta", "2.0.0")
+            .unwrap(),
+        Some(hb.clone())
+    );
+    assert_eq!(
+        vault_b
+            .crate_hash(StoreKind::Prod, "alpha", "1.0.0")
+            .unwrap(),
+        Some(ha)
+    );
+    assert_eq!(
+        vault_b
+            .crate_hash(StoreKind::Prod, "beta", "2.0.0")
+            .unwrap(),
+        Some(hb)
+    );
+}
+
+#[test]
+fn metadata_values_are_encrypted_at_rest_by_spacedb() {
+    let (dir, vault) = fresh();
+    let hash = vault.put_artifact(StoreKind::Dirty, b"x").unwrap();
+    let artifact = ArtifactRef {
+        ecosystem: EcosystemId::Cargo,
+        hash,
+    };
+
+    // A distinctive marker placed in a metadata *value* (not the key).
+    let marker = "TOP-SECRET-FINDING-MARKER-9f3a7c";
+    vault
+        .put_verdict(
+            &artifact,
+            &ScanVerdict::Findings(vec![Finding {
+                id: marker.into(),
+                severity: Severity::High,
+                summary: "leak probe".into(),
+            }]),
+        )
+        .unwrap();
+
+    // The on-disk SpaceDB file must contain only ciphertext for the value — the marker, which
+    // lives inside the encrypted row, must not appear in plaintext.
+    let db_bytes = fs::read(dir.path().join("store").join("meta.db")).unwrap();
+    assert!(
+        !db_bytes
+            .windows(marker.len())
+            .any(|w| w == marker.as_bytes()),
+        "metadata value leaked in plaintext — SpaceDB encryption is not active"
+    );
+    // Sanity: it still round-trips through decryption.
+    assert!(!vault.get_verdict(&artifact).unwrap().unwrap().is_clean());
+}

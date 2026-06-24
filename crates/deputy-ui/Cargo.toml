@@ -1,6 +1,6 @@
 [package]
 name = "deputy-ui"
-description = "Dioxus app (web via WASM + native), a pure client of deputy-api. Dioxus deps land in M7."
+description = "Dioxus web app — a pure HTTP client of the Deputy API."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,12 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+
+# Browser-only deps: the Dioxus web renderer + a wasm fetch client. Gated to wasm32 so the
+# crate still compiles trivially on the host (cargo build --workspace / clippy), where it is
+# just a stub `main` (src/main.rs). Build/run the real app with: dx serve --platform web.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+dioxus = { version = "0.7", features = ["web"] }
+gloo-net = { version = "0.6", features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

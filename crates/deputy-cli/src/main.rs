@@ -170,6 +170,14 @@ struct SyncArgs {
     /// The CRDT update file to write (export) or read (import).
     #[arg(long)]
     file: PathBuf,
+    /// Your mID DID — the sync key is bound to it (so only your devices can read the blob).
+    /// Falls back to the DEPUTY_MID_DID environment variable.
+    #[arg(long)]
+    mid_did: Option<String>,
+    /// Deactivate mID: bind the sync key to a local identity instead of an mID DID. The blob is
+    /// still encrypted (confidentiality rests on the passphrase alone).
+    #[arg(long, conflicts_with = "mid_did")]
+    no_mid: bool,
     /// Deputy home directory. Defaults to $HOME/.deputy.
     #[arg(long)]
     vault: Option<PathBuf>,
@@ -217,13 +225,43 @@ fn run_sync(action: SyncAction) -> ExitCode {
         SyncAction::Export(args) => (args, true),
         SyncAction::Import(args) => (args, false),
     };
+
+    // The mID-bound sync key needs the passphrase (confidentiality) + the mID DID (shared
+    // identity). Both must match across the user's devices for the blob to open.
+    let passphrase = match std::env::var("DEPUTY_PASSPHRASE") {
+        Ok(p) if !p.is_empty() => p,
+        _ => return fail("set DEPUTY_PASSPHRASE to the vault passphrase"),
+    };
+    // Resolve the identity the sync key binds to: an mID DID (default), or the local identity
+    // when mID is deactivated. Either way the blob is encrypted; mID just namespaces the key.
+    let binding_did =
+        if args.no_mid {
+            deputy_api::LOCAL_DID.to_owned()
+        } else {
+            match args.mid_did.clone().or_else(|| {
+                std::env::var("DEPUTY_MID_DID")
+                    .ok()
+                    .filter(|d| !d.is_empty())
+            }) {
+                Some(d) => d,
+                None => return fail(
+                    "set --mid-did or DEPUTY_MID_DID to your mID, or pass --no-mid to bind the \
+                     sync key to a local identity",
+                ),
+            }
+        };
+    let sync = match deputy_store::derive_sync_key(passphrase.as_bytes(), &binding_did) {
+        Ok(k) => k,
+        Err(e) => return fail(&format!("deriving sync key: {e}")),
+    };
+
     let vault = match open_vault_from_env(args.vault) {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
 
     if exporting {
-        match deputy_store::export_metadata(&vault) {
+        match deputy_store::export_metadata(&vault, &sync) {
             Ok(update) => match std::fs::write(&args.file, &update) {
                 Ok(()) => {
                     println!(
@@ -242,7 +280,7 @@ fn run_sync(action: SyncAction) -> ExitCode {
             Ok(u) => u,
             Err(e) => return fail(&format!("read {}: {e}", args.file.display())),
         };
-        match deputy_store::import_metadata(&vault, &update) {
+        match deputy_store::import_metadata(&vault, &update, &sync) {
             Ok(report) => {
                 println!(
                     "merged — {} metadata entries after sync",
@@ -250,7 +288,9 @@ fn run_sync(action: SyncAction) -> ExitCode {
                 );
                 ExitCode::SUCCESS
             }
-            Err(e) => fail(&format!("import failed: {e}")),
+            Err(e) => fail(&format!(
+                "import failed (wrong passphrase or mID? the blob is sealed to your identity): {e}"
+            )),
         }
     }
 }

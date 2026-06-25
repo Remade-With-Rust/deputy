@@ -1,6 +1,8 @@
+use crate::error::Result;
+use crate::kdf::{derive_master, KdfParams};
 use crate::key::{MasterKey, SubKey};
 use hkdf::Hkdf;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 /// Domain-separation labels for HKDF subkey derivation. The label is versioned, so changing
@@ -16,6 +18,8 @@ pub enum KeyDomain {
     Audit,
     /// Seals the master-key verifier blob.
     Verify,
+    /// Seals the cross-device metadata sync blob ([`derive_sync_key`]).
+    Sync,
 }
 
 impl KeyDomain {
@@ -25,6 +29,7 @@ impl KeyDomain {
             KeyDomain::Meta => b"deputy:subkey:meta:v1",
             KeyDomain::Audit => b"deputy:subkey:audit:v1",
             KeyDomain::Verify => b"deputy:subkey:verify:v1",
+            KeyDomain::Sync => b"deputy:subkey:sync:v1",
         }
     }
 }
@@ -45,6 +50,29 @@ pub fn derive_artifact_subkey(store_key: &SubKey, content_hash: &[u8]) -> SubKey
     let subkey = expand(store_key.as_bytes(), &info);
     info.zeroize();
     subkey
+}
+
+/// Derive the **mID-bound sync key** that a user's devices share to seal the cross-device
+/// metadata sync blob (`docs/STORAGE.md` §7).
+///
+/// mID is sign/verify-only and exports no secret, so confidentiality comes from the
+/// `passphrase`; the `mid_did` supplies a deterministic, identity-bound Argon2id salt. Every
+/// device of the same user — same passphrase, same mID — therefore derives the *same* key,
+/// while a different identity (different DID) or passphrase derives a different one. The salt is
+/// distinct from the per-device random vault salt, so this key is unrelated to the at-rest key.
+pub fn derive_sync_key(passphrase: &[u8], mid_did: &str) -> Result<SubKey> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"deputy:sync:salt:v1");
+    hasher.update(mid_did.as_bytes());
+    let digest = hasher.finalize();
+    let mut salt = [0u8; 16];
+    salt.copy_from_slice(&digest[..16]);
+
+    // Reuse the hardened cost parameters, but override the random salt with the DID-bound one.
+    let mut params = KdfParams::recommended()?;
+    params.salt = salt;
+    let master = derive_master(passphrase, &params)?;
+    Ok(derive_subkey(&master, KeyDomain::Sync))
 }
 
 fn expand(ikm: &[u8], info: &[u8]) -> SubKey {

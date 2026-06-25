@@ -30,7 +30,7 @@ mod tests;
 pub use audit::AuditEntry;
 pub use error::{Result, StoreError};
 pub use snapshot::{restore, snapshot, RestoreInfo, SnapshotInfo};
-pub use sync::{export_metadata, import_metadata, SyncReport};
+pub use sync::{derive_sync_key, export_metadata, import_metadata, SyncKey, SyncReport};
 pub use vault::Vault;
 
 // Re-export the storage-relevant core vocabulary so callers need only depend on this crate.

@@ -31,7 +31,7 @@ mod verify;
 mod tests;
 
 pub use aead::{open, seal};
-pub use derive::{derive_artifact_subkey, derive_subkey, KeyDomain};
+pub use derive::{derive_artifact_subkey, derive_subkey, derive_sync_key, KeyDomain};
 pub use error::{CryptoError, Result};
 pub use kdf::{derive_master, KdfParams};
 pub use key::{MasterKey, SubKey};

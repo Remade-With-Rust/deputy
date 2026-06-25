@@ -18,7 +18,7 @@ mod tests;
 
 pub use error::ApiError;
 pub use http::router;
-pub use service::DeputyService;
+pub use service::{DeputyService, LOCAL_DID};
 
 // Re-export the identity types + verification entry point callers need to open a service. With
 // mID active, build a `Session` by verifying a wallet token via [`verify`] + [`VerifyParams`];

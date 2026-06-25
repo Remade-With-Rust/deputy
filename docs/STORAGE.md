@@ -132,22 +132,36 @@ existing seam, so the rest of Deputy is unaffected:
 | Layer | SpaceDB crate | In Deputy | Surface |
 |---|---|---|---|
 | **0** storage | `spacedb-store` | the durable, transactional metadata KV (redb engine) | — |
-| **1+3** CRDT/consistency | `spacedb-crdt` | metadata as LWW registers in a `CrdtDoc`; conflict-free **multi-device sync** (export/import; new entries union, same key resolves LWW) | `deputy sync export/import` |
+| **1+3** CRDT/consistency | `spacedb-crdt` | metadata as LWW registers in a `CrdtDoc`; conflict-free **multi-device sync** (export/import; new entries union, same key resolves LWW), the blob **sealed under the mID-bound sync key** | `deputy sync export/import` |
 | **2 cold** durability | `spacedb-durability` | Reed-Solomon erasure-coded **vault snapshots** (k-of-n recovery; survives lost shards) | `deputy snapshot` / `deputy restore` |
 | **2 hot** replica | `spacedb-replica` | the delta primitive (`state_vector`/`encode_update_since`) is in place; the **live always-on transport** is the documented networked extension (a daemon, not the CLI's model) | — |
 | **5** access | `spacedb-access` | every API op gated by a **signed, scoped, expiring, revocable capability** (P-256, mID family) — for humans AND AI agents | `DeputyService::grant` / `revoke` |
 
 Encryption boundaries: metadata rows are encrypted by SpaceDB's per-collection DEK (KEK =
 `K_meta`, §2/§4). Snapshots archive the already-encrypted vault files (no passphrase needed).
-The CRDT sync blob is a **portable, unencrypted** update — transfer it over a secure channel
-between your own devices (a future revision derives a shared sync key from the user's mID).
+
+The **CRDT sync blob is end-to-end encrypted** under the **mID-bound sync key**
+(`derive_sync_key`): `Argon2id(passphrase, salt = SHA-256("deputy:sync:salt:v1" ‖ mid_did))`,
+then an HKDF `Sync`-domain subkey, sealing the update with AES-256-GCM. mID exports no secret,
+so confidentiality comes from the **passphrase**; the **mID DID** supplies a deterministic,
+identity-bound salt. Every device of one user (same passphrase + same mID) derives the *same*
+key and can merge the others' exports; a different identity or passphrase derives a different
+key and the blob fails to open. This requires the **same passphrase across a user's devices**
+(the only shared secret) — a deliberate, documented condition. CLI: `--mid-did` / `DEPUTY_MID_DID`.
+
+**mID can be turned off here too**, mirroring `deputy serve --no-mid`: `deputy sync --no-mid`
+binds the key to the local identity (`LOCAL_DID`) instead of an mID DID, so local-mode and
+embedded deployments still get an *encrypted* sync — confidentiality then rests on the passphrase
+alone (no identity namespace). `--no-mid` and `--mid-did` are mutually exclusive.
 
 ## 8. Open questions
 
 - [x] mID vs. the Argon2id secret: **resolved** — separate factors. Passphrase derives the key;
       mID session gates unlock ([AUTH.md §8](./AUTH.md)). Optional future: bind a passphrase-wrapping
       factor to an mID device key.
-- [ ] Shared sync key from the user's mID, so the CRDT sync blob can be encrypted across devices.
+- [x] Shared sync key from the user's mID: **resolved** — `derive_sync_key` (above) binds an
+      Argon2id salt to the mID DID, so the CRDT sync blob is end-to-end encrypted across a user's
+      devices without mID ever exporting a secret.
 - [ ] Key rotation: re-seal under a new MK without exposing plaintext to disk (stream re-seal).
 - [ ] Deliberate trade-off to confirm with the user: **lost secret ⇒ unrecoverable store**
       (no backdoor). Optional, explicitly-opt-in escrow is a possible future feature, not a default.

@@ -20,9 +20,10 @@ use crate::error::ApiError;
 /// The capability scope covering Deputy's whole vault.
 const DEPUTY_SCOPE: &str = "deputy";
 
-/// The synthetic owner DID used when mID is deactivated ([`DeputyService::open_local`]). It is
-/// deliberately *not* a `did:mata:` identity, so it is obvious in logs that no mID backs it.
-const LOCAL_DID: &str = "did:deputy:local";
+/// The synthetic owner DID used when mID is deactivated ([`DeputyService::open_local`], and the
+/// `deputy sync --no-mid` key binding). It is deliberately *not* a `did:mata:` identity, so it
+/// is obvious in logs that no mID backs it.
+pub const LOCAL_DID: &str = "did:deputy:local";
 
 /// The in-process capability surface — the canonical API the CLI, the HTTP server, and the UI
 /// all drive. Holds an unlocked [`Vault`], the mID [`Session`] that authorized the unlock, and a

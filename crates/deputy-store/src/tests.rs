@@ -296,11 +296,20 @@ fn metadata_converges_across_two_vaults_via_crdt_sync() {
         .put_crate_hash(StoreKind::Prod, "beta", "2.0.0", &hb)
         .unwrap();
 
-    // Bidirectional CRDT sync.
-    let from_a = crate::export_metadata(&vault_a).unwrap();
-    let from_b = crate::export_metadata(&vault_b).unwrap();
-    crate::import_metadata(&vault_b, &from_a).unwrap();
-    crate::import_metadata(&vault_a, &from_b).unwrap();
+    // The user's two devices derive the same mID-bound sync key (same passphrase + same mID).
+    let did = "did:mata:owner";
+    let sync = crate::derive_sync_key(PW, did).unwrap();
+
+    // Bidirectional CRDT sync over the sealed blobs.
+    let from_a = crate::export_metadata(&vault_a, &sync).unwrap();
+    let from_b = crate::export_metadata(&vault_b, &sync).unwrap();
+
+    // A different identity (or passphrase) cannot open the blob — it is end-to-end encrypted.
+    let intruder = crate::derive_sync_key(PW, "did:mata:someone-else").unwrap();
+    assert!(crate::import_metadata(&vault_b, &from_a, &intruder).is_err());
+
+    crate::import_metadata(&vault_b, &from_a, &sync).unwrap();
+    crate::import_metadata(&vault_a, &from_b, &sync).unwrap();
 
     // Both vaults converge on the union of the two crate-index entries.
     assert_eq!(

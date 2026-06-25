@@ -3,7 +3,7 @@
 [![CI](https://github.com/Remade-With-Rust/deputy/actions/workflows/ci.yml/badge.svg)](https://github.com/Remade-With-Rust/deputy/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/deputy-cli.svg)](https://crates.io/crates/deputy-cli)
 [![docs.rs](https://img.shields.io/docsrs/deputy-core)](https://docs.rs/deputy-core)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 A repository for your portfolio of github codebases dependencies. Recursive dep acquisition, language understanding/analytics, storage, scanning, staging, and deployment.
 
@@ -69,4 +69,13 @@ MATA mID is the main sign on mechanism gating this tool for a user. Crates are a
 
 ## License
 
-Apache 2.0
+Deputy is free for anyone to use, for any purpose, including commercially — no fees, no
+copyleft. It is dual-licensed, at your option, under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](./LICENSE-APACHE) or
+  <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](./LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+this project, as defined in the Apache-2.0 license, shall be dual-licensed as above, without any
+additional terms or conditions.

@@ -40,8 +40,10 @@ version bumps and `CHANGELOG.md` entries from these prefixes, so accurate types 
 
 ## Licensing of contributions
 
-By contributing, you agree that your contributions are licensed under the project's license
-(see [`LICENSE`](./LICENSE)).
+Deputy is dual-licensed under [MIT](./LICENSE-MIT) **or** [Apache-2.0](./LICENSE-APACHE), at the
+user's option. Unless you explicitly state otherwise, any contribution you intentionally submit
+for inclusion in the project, as defined in the Apache-2.0 license, shall be dual-licensed as
+above, without any additional terms or conditions.
 
 ## Releases
 

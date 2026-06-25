@@ -17,6 +17,7 @@ Conventional Commits.
 
 ### Changed
 
+- Dual-licensed under **MIT OR Apache-2.0** (was Apache-2.0) — free for any use, no restrictions.
 - Depend on the published crates.io versions of the MATA mID and SpaceDB crates (no more
   `mata-master` path or git dependencies); the workspace is now fully portable and embeddable.
 

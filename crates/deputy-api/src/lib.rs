@@ -11,6 +11,7 @@
 
 mod error;
 mod http;
+mod rustsec;
 mod service;
 
 #[cfg(test)]

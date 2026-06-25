@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use deputy_acquire::{acquire, AcquireReport};
-use deputy_analyze::{analyze, AnalysisReport};
-use deputy_core::{ContentHash, DepEcosystem, Pin, SourceId, StoreKind};
+use deputy_acquire::{acquire, acquire_pins, AcquireReport};
+use deputy_analyze::{analyze, inspect, AnalysisReport};
+use deputy_core::{ContentHash, DepEcosystem, Pin, ScanVerdict, SourceId, StoreKind};
 use deputy_deploy::{gate, materialize, promote, GateDecision, MaterializePlan, Promotion};
 use deputy_ecosystem::{parse_pins, CargoEcosystem};
 use deputy_id::Session;
@@ -14,6 +14,8 @@ use spacedb_access::{
     authorize, AccessRequest, Capability, Did, Identity, MemKeyDirectory, Ops, RevocationSet,
     Scope, SignedCapability,
 };
+
+use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
 
@@ -25,6 +27,314 @@ const DEPUTY_SCOPE: &str = "deputy";
 /// is obvious in logs that no mID backs it.
 pub const LOCAL_DID: &str = "did:deputy:local";
 
+/// One repository's download + acquisition result within a folder.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RepoSummary {
+    pub full_name: String,
+    /// Total pinned dependencies in the lockfile (the full transitive closure).
+    pub deps: usize,
+    /// Dependencies now sealed in the vault (newly acquired + already present).
+    pub acquired: usize,
+    pub lockfile_found: bool,
+    pub error: Option<String>,
+}
+
+/// A named folder grouping the repositories allocated to it.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct FolderSummary {
+    pub name: String,
+    pub repos: Vec<RepoSummary>,
+}
+
+/// A single advisory/integrity finding for a dependency.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct FindingView {
+    pub dep: String,
+    pub id: String,
+    pub severity: String,
+    pub summary: String,
+}
+
+/// The scan result for one repository in a folder.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RepoScanResult {
+    pub full_name: String,
+    pub deps: usize,
+    pub lockfile_found: bool,
+    pub findings: Vec<FindingView>,
+    pub error: Option<String>,
+}
+
+/// The result of scanning every repository in a folder.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct FolderScanReport {
+    pub name: String,
+    pub repos: Vec<RepoScanResult>,
+}
+
+/// One dependency's "social heartbeat": is a newer version out, and does the pinned version have
+/// a known advisory (an issue that has landed publicly)?
+#[derive(Serialize, Deserialize, Clone)]
+pub struct HeartbeatEntry {
+    pub name: String,
+    pub current: String,
+    pub latest: Option<String>,
+    pub update_available: bool,
+    pub advisories: Vec<String>,
+}
+
+/// The heartbeat for every dependency in a folder.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct HeartbeatReport {
+    pub name: String,
+    pub entries: Vec<HeartbeatEntry>,
+}
+
+/// A validated (promoted) dependency in the production store.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ProdDep {
+    pub name: String,
+    pub version: String,
+    pub hash: String,
+}
+
+/// A dependency that has a newer release than the pinned version. The current version may already
+/// be in production; the new version is staged (downloaded) pending review.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct NewVersionEntry {
+    pub name: String,
+    pub production: String,
+    pub in_production: bool,
+    pub staged: String,
+    pub staged_ok: bool,
+}
+
+/// The result of a new-version scan over a folder.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct NewVersionReport {
+    pub name: String,
+    pub entries: Vec<NewVersionEntry>,
+}
+
+/// Aggregate line counts for one language across a folder's dependency crates.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct LangStat {
+    pub language: String,
+    pub lines: usize,
+    pub crates: usize,
+}
+
+/// One dependency crate: the languages its `.crate` contains plus the supply-chain risk signals
+/// that bear on a security review (`docs/PIPELINE.md` §3).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct DepLang {
+    pub name: String,
+    pub version: String,
+    pub languages: Vec<String>,
+    pub lines: usize,
+    /// Runs a `build.rs` — arbitrary code at build time.
+    pub has_build_script: bool,
+    /// A proc-macro crate — code runs inside the compiler.
+    pub is_proc_macro: bool,
+    /// Heuristic count of `unsafe` in the Rust sources.
+    pub unsafe_occurrences: usize,
+    /// `links = "…"` native library (FFI / sys crate), if any.
+    pub links_native: Option<String>,
+    /// Lines written in memory-unsafe native languages (C / C++ / asm).
+    pub native_unsafe_lines: usize,
+}
+
+/// Dependency-language + security analytics for a folder.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct DepAnalytics {
+    pub name: String,
+    pub total_deps: usize,
+    pub analyzed: usize,
+    pub by_language: Vec<LangStat>,
+    pub deps: Vec<DepLang>,
+    // Aggregate risk counts across the analyzed crates.
+    pub build_scripts: usize,
+    pub proc_macros: usize,
+    pub native_crates: usize,
+    pub unsafe_crates: usize,
+}
+
+struct AnalyticsBody {
+    analyzed: usize,
+    by_language: Vec<LangStat>,
+    deps: Vec<DepLang>,
+    build_scripts: usize,
+    proc_macros: usize,
+    native_crates: usize,
+    unsafe_crates: usize,
+}
+
+/// Download + inspect each unique dependency crate, aggregating language line counts and the
+/// supply-chain risk signals. Blocking (network + tar inspection) — run under `spawn_blocking`.
+fn compute_dep_analytics(vault: &Vault, pins: Vec<Pin>) -> AnalyticsBody {
+    let eco = CargoEcosystem::new();
+    let mut lines: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut crate_counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut deps = Vec::with_capacity(pins.len());
+    let (mut analyzed, mut build_scripts, mut proc_macros, mut native_crates, mut unsafe_crates) =
+        (0, 0, 0, 0, 0);
+
+    for pin in &pins {
+        let name = pin.dep.name.as_str().to_owned();
+        let version = pin.dep.version.as_str().to_owned();
+        // Prefer the already-acquired crate from the vault; only download what isn't staged.
+        let bytes = vault
+            .get_artifact(StoreKind::Dirty, &pin.expected)
+            .ok()
+            .or_else(|| eco.fetch(pin).ok());
+        match bytes.and_then(|b| inspect(&b).ok()) {
+            Some(facts) => {
+                analyzed += 1;
+                let mut langs = Vec::new();
+                for (lang, count) in &facts.languages {
+                    let l = lang.as_str().to_owned();
+                    *lines.entry(l.clone()).or_default() += count;
+                    *crate_counts.entry(l.clone()).or_default() += 1;
+                    langs.push(l);
+                }
+                let native_unsafe_lines = facts.native_unsafe_lines();
+                let is_native = facts.links_native.is_some() || native_unsafe_lines > 0;
+                if facts.has_build_script {
+                    build_scripts += 1;
+                }
+                if facts.is_proc_macro {
+                    proc_macros += 1;
+                }
+                if is_native {
+                    native_crates += 1;
+                }
+                if facts.unsafe_occurrences > 0 {
+                    unsafe_crates += 1;
+                }
+                deps.push(DepLang {
+                    name,
+                    version,
+                    languages: langs,
+                    lines: facts.total_lines,
+                    has_build_script: facts.has_build_script,
+                    is_proc_macro: facts.is_proc_macro,
+                    unsafe_occurrences: facts.unsafe_occurrences,
+                    links_native: facts.links_native.clone(),
+                    native_unsafe_lines,
+                });
+            }
+            None => deps.push(DepLang {
+                name,
+                version,
+                languages: vec![],
+                lines: 0,
+                has_build_script: false,
+                is_proc_macro: false,
+                unsafe_occurrences: 0,
+                links_native: None,
+                native_unsafe_lines: 0,
+            }),
+        }
+    }
+
+    let mut by_language: Vec<LangStat> = lines
+        .into_iter()
+        .map(|(language, lines)| LangStat {
+            crates: crate_counts.get(&language).copied().unwrap_or(0),
+            language,
+            lines,
+        })
+        .collect();
+    by_language.sort_by_key(|s| std::cmp::Reverse(s.lines));
+    AnalyticsBody {
+        analyzed,
+        by_language,
+        deps,
+        build_scripts,
+        proc_macros,
+        native_crates,
+        unsafe_crates,
+    }
+}
+
+/// Fetch a repo's `Cargo.lock` over the GitHub API. `Ok(Some)` if present, `Ok(None)` if absent.
+async fn fetch_lockfile(
+    client: &reqwest::Client,
+    token: &str,
+    full_name: &str,
+) -> Result<Option<String>, String> {
+    let url = format!("https://api.github.com/repos/{full_name}/contents/Cargo.lock");
+    let resp = client
+        .get(&url)
+        .bearer_auth(token)
+        .header("User-Agent", "deputy")
+        .header("Accept", "application/vnd.github.raw")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GitHub {}", resp.status()));
+    }
+    resp.text().await.map(Some).map_err(|e| e.to_string())
+}
+
+/// The latest stable version of a crate on crates.io, if reachable.
+async fn crates_io_latest(client: &reqwest::Client, name: &str) -> Option<String> {
+    let resp = client
+        .get(format!("https://crates.io/api/v1/crates/{name}"))
+        .header("User-Agent", "deputy")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    let krate = v.get("crate")?;
+    krate
+        .get("max_stable_version")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| krate.get("newest_version").and_then(|s| s.as_str()))
+        .map(String::from)
+}
+
+/// The latest stable version of a crate **and its `.crate` checksum**, so the new version can be
+/// staged (downloaded + integrity-verified) without a lockfile.
+async fn crates_io_latest_versioned(
+    client: &reqwest::Client,
+    name: &str,
+) -> Option<(String, String)> {
+    let resp = client
+        .get(format!("https://crates.io/api/v1/crates/{name}"))
+        .header("User-Agent", "deputy")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    let krate = v.get("crate")?;
+    let latest = krate
+        .get("max_stable_version")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| krate.get("newest_version").and_then(|s| s.as_str()))?
+        .to_owned();
+    let checksum = v
+        .get("versions")?
+        .as_array()?
+        .iter()
+        .find(|ver| ver.get("num").and_then(|n| n.as_str()) == Some(latest.as_str()))
+        .and_then(|ver| ver.get("checksum").and_then(|c| c.as_str()))?
+        .to_owned();
+    Some((latest, checksum))
+}
+
 /// The in-process capability surface — the canonical API the CLI, the HTTP server, and the UI
 /// all drive. Holds an unlocked [`Vault`], the mID [`Session`] that authorized the unlock, and a
 /// SpaceDB **capability** (Layer 5) that gates every operation for the acting principal — a
@@ -33,7 +343,7 @@ pub struct DeputyService {
     vault: Vault,
     session: Session,
     ecosystem: CargoEcosystem,
-    advisories: AdvisoryDb,
+    advisories: std::sync::RwLock<AdvisoryDb>,
 
     // SpaceDB Layer 5 — signed, scoped, revocable capability gating.
     owner: Identity,
@@ -44,6 +354,21 @@ pub struct DeputyService {
     /// Whether a verified mID session authorized this service. `false` when opened in local mode
     /// ([`Self::open_local`]) — capabilities still gate ops, but the owner is a local identity.
     mid_active: bool,
+
+    /// A connected GitHub fine-grained PAT used to list/acquire the user's repos. Held in memory
+    /// only — never written to the vault or logged.
+    github_token: std::sync::Mutex<Option<String>>,
+
+    /// Named folders grouping downloaded repositories. In-memory for this session (persistence
+    /// to the vault is a follow-up).
+    folders: std::sync::Mutex<HashMap<String, FolderSummary>>,
+
+    /// Cached dependency-language analytics per folder — downloading + inspecting every crate is
+    /// expensive, so it's computed lazily and invalidated on re-download / delete.
+    analytics_cache: std::sync::Mutex<HashMap<String, DepAnalytics>>,
+
+    /// Live `(done, total)` acquisition progress for the in-flight download, polled by the UI.
+    download_progress: std::sync::Mutex<Option<(usize, usize)>>,
 }
 
 impl DeputyService {
@@ -103,19 +428,565 @@ impl DeputyService {
             vault,
             session,
             ecosystem: CargoEcosystem::new(),
-            advisories: AdvisoryDb::new(),
+            advisories: std::sync::RwLock::new(AdvisoryDb::new()),
             owner,
             directory,
             revocations: RevocationSet::new(),
             capability,
             mid_active,
+            github_token: std::sync::Mutex::new(None),
+            folders: std::sync::Mutex::new(HashMap::new()),
+            analytics_cache: std::sync::Mutex::new(HashMap::new()),
+            download_progress: std::sync::Mutex::new(None),
         })
     }
 
     /// Attach an advisory database used by [`DeputyService::scan`].
     pub fn with_advisories(mut self, advisories: AdvisoryDb) -> Self {
-        self.advisories = advisories;
+        self.advisories = std::sync::RwLock::new(advisories);
         self
+    }
+
+    /// Replace the advisory database with a freshly-downloaded RUSTSEC one (capability: WRITE).
+    /// Returns the number of advisories loaded.
+    pub async fn load_rustsec_advisories(&self) -> Result<usize, ApiError> {
+        self.authorize_op(Ops::WRITE)?;
+        let db = crate::rustsec::fetch_rustsec()
+            .await
+            .map_err(ApiError::bad_request)?;
+        let count = db.len();
+        *self.advisories.write().expect("advisories lock") = db;
+        Ok(count)
+    }
+
+    /// How many advisories are currently loaded.
+    pub fn advisory_count(&self) -> usize {
+        self.advisories.read().expect("advisories lock").len()
+    }
+
+    /// Connect a GitHub fine-grained PAT (capability: WRITE). Stored in memory for this session.
+    pub fn connect_github(&self, token: String) -> Result<(), ApiError> {
+        self.authorize_op(Ops::WRITE)?;
+        if token.trim().is_empty() {
+            return Err(ApiError::bad_request("empty GitHub token"));
+        }
+        *self.github_token.lock().expect("github_token mutex") = Some(token);
+        Ok(())
+    }
+
+    /// The connected GitHub PAT (capability: READ), or a 400 if none is connected yet.
+    pub(crate) fn github_token(&self) -> Result<String, ApiError> {
+        self.authorize_op(Ops::READ)?;
+        self.github_token
+            .lock()
+            .expect("github_token mutex")
+            .clone()
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "GitHub not connected — POST a token to /github/connect first",
+                )
+            })
+    }
+
+    /// Download + analyze the selected repos' lockfiles and allocate them to `folder`
+    /// (capability: WRITE). Each repo's `Cargo.lock` is fetched over the GitHub API and its
+    /// pinned dependencies counted; the folder grouping is stored for the Infrastructure view.
+    pub async fn download_repos(
+        &self,
+        folder: String,
+        repos: Vec<String>,
+    ) -> Result<FolderSummary, ApiError> {
+        self.authorize_op(Ops::WRITE)?;
+        let token = self.github_token()?;
+        let client = reqwest::Client::new();
+
+        // Pre-pass: fetch each lockfile and parse its pins (the full transitive tree per repo).
+        struct Staged {
+            repo: String,
+            lockfile_found: bool,
+            fetch_error: Option<String>,
+            pins: Vec<Pin>,
+        }
+        let mut staged = Vec::with_capacity(repos.len());
+        for repo in repos {
+            match fetch_lockfile(&client, &token, &repo).await {
+                Ok(Some(text)) => {
+                    let pins = parse_pins(&text).unwrap_or_default();
+                    staged.push(Staged {
+                        repo,
+                        lockfile_found: true,
+                        fetch_error: None,
+                        pins,
+                    });
+                }
+                Ok(None) => staged.push(Staged {
+                    repo,
+                    lockfile_found: false,
+                    fetch_error: None,
+                    pins: vec![],
+                }),
+                Err(e) => staged.push(Staged {
+                    repo,
+                    lockfile_found: false,
+                    fetch_error: Some(e),
+                    pins: vec![],
+                }),
+            }
+        }
+
+        // Deduplicate the pins across all repos IN MEMORY (content-addressed) so a crate shared
+        // by several repos is downloaded at most once. `acquire_one` additionally skips anything
+        // already sealed from a previous session, so nothing is ever fetched twice.
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut unique_pins: Vec<Pin> = Vec::new();
+        for s in &staged {
+            for p in &s.pins {
+                if seen.insert(p.expected.to_hex()) {
+                    unique_pins.push(p.clone());
+                }
+            }
+        }
+        let total = unique_pins.len();
+        *self.download_progress.lock().expect("progress mutex") = Some((0, total));
+
+        // Acquire the unique set once, reporting progress.
+        let progress = &self.download_progress;
+        acquire_pins(&self.vault, &self.ecosystem, &unique_pins, |i, _| {
+            *progress.lock().expect("progress mutex") = Some((i, total));
+        });
+        *self.download_progress.lock().expect("progress mutex") = None;
+
+        // Per-repo summary: `deps` is its lockfile pin count; `acquired` is how many of its pins
+        // are now sealed (a crate shared with another repo counts as acquired for both).
+        let mut summaries = Vec::with_capacity(staged.len());
+        for s in staged {
+            let acquired = s
+                .pins
+                .iter()
+                .filter(|p| {
+                    self.vault
+                        .has_artifact(StoreKind::Dirty, &p.expected)
+                        .unwrap_or(false)
+                })
+                .count();
+            let error = if s.fetch_error.is_some() {
+                s.fetch_error
+            } else if s.lockfile_found && acquired < s.pins.len() {
+                Some(format!(
+                    "{} of {} deps failed to acquire",
+                    s.pins.len() - acquired,
+                    s.pins.len()
+                ))
+            } else {
+                None
+            };
+            summaries.push(RepoSummary {
+                full_name: s.repo,
+                deps: s.pins.len(),
+                acquired,
+                lockfile_found: s.lockfile_found,
+                error,
+            });
+        }
+
+        let summary = FolderSummary {
+            name: folder.clone(),
+            repos: summaries,
+        };
+        self.analytics_cache
+            .lock()
+            .expect("analytics mutex")
+            .remove(&folder);
+        self.folders
+            .lock()
+            .expect("folders mutex")
+            .insert(folder, summary.clone());
+        Ok(summary)
+    }
+
+    /// The live acquisition progress `(done, total)` for the in-flight download, if any.
+    pub fn download_progress(&self) -> Option<(usize, usize)> {
+        *self.download_progress.lock().expect("progress mutex")
+    }
+
+    /// All named folders and their repositories (capability: READ).
+    pub fn folders(&self) -> Result<Vec<FolderSummary>, ApiError> {
+        self.authorize_op(Ops::READ)?;
+        Ok(self
+            .folders
+            .lock()
+            .expect("folders mutex")
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    /// Remove a named folder (capability: WRITE). No-op if it doesn't exist.
+    pub fn delete_folder(&self, name: &str) -> Result<(), ApiError> {
+        self.authorize_op(Ops::WRITE)?;
+        self.folders.lock().expect("folders mutex").remove(name);
+        self.analytics_cache
+            .lock()
+            .expect("analytics mutex")
+            .remove(name);
+        Ok(())
+    }
+
+    /// Dependency-language analytics for a folder (capability: READ). Downloads + inspects each
+    /// unique dependency crate the first time (slow); subsequent calls are served from cache.
+    pub async fn folder_analytics(
+        self: std::sync::Arc<Self>,
+        name: String,
+    ) -> Result<DepAnalytics, ApiError> {
+        self.authorize_op(Ops::READ)?;
+        if let Some(cached) = self
+            .analytics_cache
+            .lock()
+            .expect("analytics mutex")
+            .get(&name)
+            .cloned()
+        {
+            return Ok(cached);
+        }
+        let token = self.github_token()?;
+        let repo_names: Vec<String> = {
+            let folders = self.folders.lock().expect("folders mutex");
+            match folders.get(&name) {
+                Some(f) => f.repos.iter().map(|r| r.full_name.clone()).collect(),
+                None => return Err(ApiError::bad_request(format!("no such folder: {name}"))),
+            }
+        };
+
+        // Gather the unique pins across the folder's lockfiles (a crate shared by two repos is
+        // downloaded once).
+        let client = reqwest::Client::new();
+        let mut unique: std::collections::BTreeMap<(String, String), Pin> = Default::default();
+        for repo in repo_names {
+            if let Ok(Some(text)) = fetch_lockfile(&client, &token, &repo).await {
+                if let Ok(pins) = parse_pins(&text) {
+                    for p in pins {
+                        let key = (
+                            p.dep.name.as_str().to_owned(),
+                            p.dep.version.as_str().to_owned(),
+                        );
+                        unique.insert(key, p);
+                    }
+                }
+            }
+        }
+        let pins: Vec<Pin> = unique.into_values().collect();
+        let total_deps = pins.len();
+
+        let this = std::sync::Arc::clone(&self);
+        let body = tokio::task::spawn_blocking(move || compute_dep_analytics(&this.vault, pins))
+            .await
+            .map_err(|e| ApiError::bad_request(format!("analytics task failed: {e}")))?;
+
+        let analytics = DepAnalytics {
+            name: name.clone(),
+            total_deps,
+            analyzed: body.analyzed,
+            by_language: body.by_language,
+            deps: body.deps,
+            build_scripts: body.build_scripts,
+            proc_macros: body.proc_macros,
+            native_crates: body.native_crates,
+            unsafe_crates: body.unsafe_crates,
+        };
+        self.analytics_cache
+            .lock()
+            .expect("analytics mutex")
+            .insert(name, analytics.clone());
+        Ok(analytics)
+    }
+
+    /// Re-fetch a folder's lockfiles and return the unique pins across its repos.
+    async fn folder_unique_pins(
+        &self,
+        name: &str,
+        token: &str,
+        client: &reqwest::Client,
+    ) -> Result<Vec<Pin>, ApiError> {
+        let repo_names: Vec<String> = {
+            let folders = self.folders.lock().expect("folders mutex");
+            match folders.get(name) {
+                Some(f) => f.repos.iter().map(|r| r.full_name.clone()).collect(),
+                None => return Err(ApiError::bad_request(format!("no such folder: {name}"))),
+            }
+        };
+        let mut unique: std::collections::BTreeMap<(String, String), Pin> = Default::default();
+        for repo in repo_names {
+            if let Ok(Some(text)) = fetch_lockfile(client, token, &repo).await {
+                if let Ok(pins) = parse_pins(&text) {
+                    for p in pins {
+                        let key = (
+                            p.dep.name.as_str().to_owned(),
+                            p.dep.version.as_str().to_owned(),
+                        );
+                        unique.insert(key, p);
+                    }
+                }
+            }
+        }
+        Ok(unique.into_values().collect())
+    }
+
+    /// The social heartbeat for a folder's dependencies (capability: READ): for each unique dep,
+    /// fetch the latest crates.io version and surface advisories on the pinned version.
+    pub async fn folder_heartbeat(&self, name: String) -> Result<HeartbeatReport, ApiError> {
+        self.authorize_op(Ops::READ)?;
+        let token = self.github_token()?;
+        let client = reqwest::Client::new();
+        let pins = self.folder_unique_pins(&name, &token, &client).await?;
+
+        let mut entries = Vec::with_capacity(pins.len());
+        for pin in pins {
+            let dep_name = pin.dep.name.as_str().to_owned();
+            let current = pin.dep.version.as_str().to_owned();
+            let latest = crates_io_latest(&client, &dep_name).await;
+            let update_available = match (
+                semver::Version::parse(&current),
+                latest
+                    .as_deref()
+                    .and_then(|l| semver::Version::parse(l).ok()),
+            ) {
+                (Ok(cur), Some(lat)) => lat > cur,
+                _ => false,
+            };
+            let advisories = semver::Version::parse(&current)
+                .ok()
+                .map(|v| {
+                    self.advisories
+                        .read()
+                        .expect("advisories lock")
+                        .check(&dep_name, &v)
+                        .iter()
+                        .map(|a| a.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            entries.push(HeartbeatEntry {
+                name: dep_name,
+                current,
+                latest,
+                update_available,
+                advisories,
+            });
+        }
+        Ok(HeartbeatReport { name, entries })
+    }
+
+    /// Scan a folder's dependencies for newer published releases and **stage** each new version
+    /// (download + SHA-256 verify into the dirty store) alongside the current one — which may
+    /// already be in production (capability: WRITE).
+    pub async fn scan_new_versions(&self, name: String) -> Result<NewVersionReport, ApiError> {
+        self.authorize_op(Ops::WRITE)?;
+        let token = self.github_token()?;
+        let client = reqwest::Client::new();
+        let pins = self.folder_unique_pins(&name, &token, &client).await?;
+
+        // Which deps have a newer published version (with its checksum, so we can stage it)?
+        let mut updates: Vec<(String, String, String, String)> = Vec::new();
+        for pin in &pins {
+            let dep_name = pin.dep.name.as_str();
+            let current = pin.dep.version.as_str();
+            if let Some((latest, checksum)) = crates_io_latest_versioned(&client, dep_name).await {
+                let newer = matches!(
+                    (
+                        semver::Version::parse(current),
+                        semver::Version::parse(&latest)
+                    ),
+                    (Ok(c), Ok(l)) if l > c
+                );
+                if newer {
+                    updates.push((dep_name.to_owned(), current.to_owned(), latest, checksum));
+                }
+            }
+        }
+
+        // Stage the new versions into the dirty store via a synthetic lockfile (reuses the
+        // fetch -> verify -> seal pipeline).
+        let mut lockfile = String::from("version = 4\n");
+        for (dep, _cur, new, sum) in &updates {
+            lockfile.push_str(&format!(
+                "\n[[package]]\nname = \"{dep}\"\nversion = \"{new}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{sum}\"\n"
+            ));
+        }
+        let new_pins = parse_pins(&lockfile).unwrap_or_default();
+        acquire_pins(&self.vault, &self.ecosystem, &new_pins, |_, _| {});
+
+        let entries = updates
+            .into_iter()
+            .map(|(dep, cur, new, _)| {
+                let in_production = self
+                    .vault
+                    .crate_hash(StoreKind::Prod, &dep, &cur)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                let staged_ok = new_pins
+                    .iter()
+                    .find(|p| p.dep.name.as_str() == dep && p.dep.version.as_str() == new)
+                    .map(|p| {
+                        self.vault
+                            .has_artifact(StoreKind::Dirty, &p.expected)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                NewVersionEntry {
+                    name: dep,
+                    production: cur,
+                    in_production,
+                    staged: new,
+                    staged_ok,
+                }
+            })
+            .collect();
+        Ok(NewVersionReport { name, entries })
+    }
+
+    /// Promote a folder's scanned-clean, acquired dependencies into the production store
+    /// (capability: WRITE), each with a hash-chained receipt. Returns the count promoted.
+    pub async fn promote_folder(
+        &self,
+        name: String,
+        hold: Vec<(String, String)>,
+    ) -> Result<usize, ApiError> {
+        self.authorize_op(Ops::WRITE)?;
+        let token = self.github_token()?;
+        let client = reqwest::Client::new();
+        let pins = self.folder_unique_pins(&name, &token, &client).await?;
+        let hold: HashSet<(String, String)> = hold.into_iter().collect();
+        let did = self.session.did.clone();
+        // Promote every clean, acquired dependency that the caller did NOT hold back in staging.
+        let promoted = pins
+            .iter()
+            .filter(|pin| {
+                let key = (
+                    pin.dep.name.as_str().to_owned(),
+                    pin.dep.version.as_str().to_owned(),
+                );
+                !hold.contains(&key)
+                    && promote(
+                        &self.vault,
+                        pin.dep.ecosystem,
+                        pin.dep.name.as_str(),
+                        pin.dep.version.as_str(),
+                        &pin.expected,
+                        Some(&did),
+                    )
+                    .is_ok()
+            })
+            .count();
+        Ok(promoted)
+    }
+
+    /// The validated dependencies in the production store (capability: READ).
+    pub fn production_deps(&self) -> Result<Vec<ProdDep>, ApiError> {
+        self.authorize_op(Ops::READ)?;
+        let mut deps: Vec<ProdDep> = self
+            .vault
+            .list_store_crates(StoreKind::Prod)?
+            .into_iter()
+            .map(|(name, version, hash)| ProdDep {
+                name,
+                version,
+                hash: hash.to_hex(),
+            })
+            .collect();
+        deps.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.version.cmp(&b.version)));
+        Ok(deps)
+    }
+
+    /// Scan every repository in a folder (capability: WRITE). For each repo we re-fetch its
+    /// `Cargo.lock` and run the dependency scanner over its pins (advisory + substitution checks;
+    /// integrity is skipped for not-yet-acquired deps and noted as such).
+    pub async fn scan_folder(&self, name: String) -> Result<FolderScanReport, ApiError> {
+        self.authorize_op(Ops::WRITE)?;
+        let token = self.github_token()?;
+
+        let repo_names: Vec<String> = {
+            let folders = self.folders.lock().expect("folders mutex");
+            match folders.get(&name) {
+                Some(f) => f.repos.iter().map(|r| r.full_name.clone()).collect(),
+                None => return Err(ApiError::bad_request(format!("no such folder: {name}"))),
+            }
+        };
+
+        let client = reqwest::Client::new();
+        let mut repos = Vec::with_capacity(repo_names.len());
+        for full_name in repo_names {
+            repos.push(self.scan_repo(&client, &token, full_name).await);
+        }
+        Ok(FolderScanReport { name, repos })
+    }
+
+    async fn scan_repo(
+        &self,
+        client: &reqwest::Client,
+        token: &str,
+        full_name: String,
+    ) -> RepoScanResult {
+        let text = match fetch_lockfile(client, token, &full_name).await {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                return RepoScanResult {
+                    full_name,
+                    deps: 0,
+                    lockfile_found: false,
+                    findings: vec![],
+                    error: None,
+                }
+            }
+            Err(e) => {
+                return RepoScanResult {
+                    full_name,
+                    deps: 0,
+                    lockfile_found: false,
+                    findings: vec![],
+                    error: Some(e),
+                }
+            }
+        };
+        let pins = match parse_pins(&text) {
+            Ok(p) => p,
+            Err(e) => {
+                return RepoScanResult {
+                    full_name,
+                    deps: 0,
+                    lockfile_found: true,
+                    findings: vec![],
+                    error: Some(format!("parse: {e}")),
+                }
+            }
+        };
+
+        let mut findings = Vec::new();
+        for pin in &pins {
+            if let Ok(report) = scan(
+                &self.vault,
+                pin,
+                &self.advisories.read().expect("advisories lock"),
+            ) {
+                if let ScanVerdict::Findings(fs) = report.verdict {
+                    for f in fs {
+                        findings.push(FindingView {
+                            dep: format!("{} {}", pin.dep.name.as_str(), pin.dep.version.as_str()),
+                            id: f.id,
+                            severity: format!("{:?}", f.severity),
+                            summary: f.summary,
+                        });
+                    }
+                }
+            }
+        }
+        RepoScanResult {
+            full_name,
+            deps: pins.len(),
+            lockfile_found: true,
+            findings,
+            error: None,
+        }
     }
 
     pub fn session(&self) -> &Session {
@@ -247,7 +1118,14 @@ impl DeputyService {
         self.authorize_op(Ops::WRITE)?;
         self.pins(source)?
             .iter()
-            .map(|pin| scan(&self.vault, pin, &self.advisories).map_err(ApiError::from))
+            .map(|pin| {
+                scan(
+                    &self.vault,
+                    pin,
+                    &self.advisories.read().expect("advisories lock"),
+                )
+                .map_err(ApiError::from)
+            })
             .collect()
     }
 

@@ -66,9 +66,34 @@ pub fn acquire(
     source: &SourceId,
 ) -> Result<AcquireReport> {
     let pins = ecosystem.discover(source)?;
+    Ok(acquire_pins(vault, ecosystem, &pins, |_, _| {}))
+}
+
+/// Like [`acquire`], but calls `on_each(done, total)` after each dependency is processed so a
+/// caller can report download progress.
+pub fn acquire_with_progress(
+    vault: &Vault,
+    ecosystem: &dyn DepEcosystem,
+    source: &SourceId,
+    on_each: impl FnMut(usize, usize),
+) -> Result<AcquireReport> {
+    let pins = ecosystem.discover(source)?;
+    Ok(acquire_pins(vault, ecosystem, &pins, on_each))
+}
+
+/// Acquire an explicit, caller-resolved set of `pins`. The caller is responsible for
+/// **deduplicating** them; each crate is additionally skipped (no network) if its content hash
+/// is already staged in the vault. Calls `on_each(done, total)` after each pin.
+pub fn acquire_pins(
+    vault: &Vault,
+    ecosystem: &dyn DepEcosystem,
+    pins: &[deputy_core::Pin],
+    mut on_each: impl FnMut(usize, usize),
+) -> AcquireReport {
+    let total = pins.len();
     let mut report = AcquireReport::default();
 
-    for pin in &pins {
+    for (i, pin) in pins.iter().enumerate() {
         let name = pin.dep.name.as_str().to_owned();
         let version = pin.dep.version.as_str().to_owned();
         match acquire_one(vault, ecosystem, pin) {
@@ -84,9 +109,10 @@ pub fn acquire(
                 error: e.to_string(),
             }),
         }
+        on_each(i + 1, total);
     }
 
-    Ok(report)
+    report
 }
 
 fn acquire_one(

@@ -1,7 +1,11 @@
-//! The Dioxus single-page app (wasm32 only). A thin client of the Deputy API: it fetches JSON
-//! from `deputy-api` and renders the session, the deploy gate, and the analysis dashboards.
+//! The Dioxus single-page app (wasm32 only). A thin client of the Deputy API.
+//!
+//! Flow: an **mID login landing page** gates the app; once signed in, a left **sidebar** selects
+//! tabs. The **GitHub** tab connects a PAT, lists your repositories, lets you select some, name a
+//! folder, and **Download and Analyze** them into that folder. The **Infrastructure** tab lists
+//! the folders you've created.
 
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -15,191 +19,1255 @@ pub fn launch() {
 // ── API response types (mirror the deputy-api JSON) ──────────────────────────
 
 #[derive(Deserialize, Clone, PartialEq)]
-struct Health {
+struct Session {
     status: String,
     did: String,
+    #[serde(default)]
+    mid_active: bool,
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
-enum GateResult {
-    Allowed { cleared: usize },
-    Blocked { violations: Vec<Violation> },
+struct Repo {
+    full_name: String,
+    #[serde(default)]
+    private: bool,
+    #[serde(default)]
+    language: Option<String>,
+}
+
+/// The result of downloading + acquiring one repo into a folder.
+#[derive(Deserialize, Clone, PartialEq)]
+struct RepoSummary {
+    full_name: String,
+    #[serde(default)]
+    deps: usize,
+    #[serde(default)]
+    acquired: usize,
+    #[serde(default)]
+    lockfile_found: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// A named folder grouping the repositories allocated to it.
+#[derive(Deserialize, Clone, PartialEq)]
+struct FolderSummary {
+    name: String,
+    repos: Vec<RepoSummary>,
+}
+
+/// Live acquisition progress, polled during a download.
+#[derive(Deserialize, Clone, PartialEq)]
+struct ProgressView {
+    done: usize,
+    total: usize,
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
-struct Violation {
+struct FindingView {
+    dep: String,
+    id: String,
+    severity: String,
+    summary: String,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+struct RepoScanResult {
+    full_name: String,
+    #[serde(default)]
+    deps: usize,
+    #[serde(default)]
+    lockfile_found: bool,
+    #[serde(default)]
+    findings: Vec<FindingView>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+struct FolderScanReport {
+    name: String,
+    repos: Vec<RepoScanResult>,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+struct HeartbeatEntry {
+    name: String,
+    current: String,
+    #[serde(default)]
+    latest: Option<String>,
+    #[serde(default)]
+    update_available: bool,
+    #[serde(default)]
+    advisories: Vec<String>,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+struct HeartbeatReport {
+    name: String,
+    entries: Vec<HeartbeatEntry>,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+struct ProdDep {
     name: String,
     version: String,
-    reason: String,
+    #[serde(default)]
+    hash: String,
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
-struct Analysis {
-    language_report: LangReport,
-    risks: Vec<Risk>,
-    total_crates: usize,
-    inspected: usize,
+struct NewVersionEntry {
+    name: String,
+    production: String,
+    #[serde(default)]
+    in_production: bool,
+    staged: String,
+    #[serde(default)]
+    staged_ok: bool,
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
-struct LangReport {
-    by_language: BTreeMap<String, usize>,
-    crates_analyzed: usize,
+struct NewVersionReport {
+    name: String,
+    entries: Vec<NewVersionEntry>,
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
-struct Risk {
+struct LangStat {
+    language: String,
+    lines: usize,
+    crates: usize,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+struct DepLang {
     name: String,
     version: String,
-    blast_radius: usize,
-    score: f64,
-    reasons: Vec<String>,
-    inspected: bool,
+    #[serde(default)]
+    languages: Vec<String>,
+    #[serde(default)]
+    lines: usize,
+    #[serde(default)]
+    has_build_script: bool,
+    #[serde(default)]
+    is_proc_macro: bool,
+    #[serde(default)]
+    unsafe_occurrences: usize,
+    #[serde(default)]
+    links_native: Option<String>,
+    #[serde(default)]
+    native_unsafe_lines: usize,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+struct DepAnalytics {
+    name: String,
+    total_deps: usize,
+    analyzed: usize,
+    by_language: Vec<LangStat>,
+    deps: Vec<DepLang>,
+    #[serde(default)]
+    build_scripts: usize,
+    #[serde(default)]
+    proc_macros: usize,
+    #[serde(default)]
+    native_crates: usize,
+    #[serde(default)]
+    unsafe_crates: usize,
 }
 
 // ── API client (browser fetch via gloo-net) ──────────────────────────────────
 
+async fn read_json<T: for<'de> Deserialize<'de>>(
+    resp: gloo_net::http::Response,
+) -> Result<T, String> {
+    if !resp.ok() {
+        let status = resp.status();
+        let msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        return Err(msg);
+    }
+    resp.json::<T>().await.map_err(|e| e.to_string())
+}
+
 async fn get_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
-    gloo_net::http::Request::get(&format!("{API_BASE}{path}"))
+    let resp = gloo_net::http::Request::get(&format!("{API_BASE}{path}"))
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .json::<T>()
-        .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    read_json(resp).await
 }
 
-async fn post_source<T: for<'de> Deserialize<'de>>(path: &str, source: &str) -> Result<T, String> {
-    gloo_net::http::Request::post(&format!("{API_BASE}{path}"))
-        .json(&serde_json::json!({ "source": source }))
+async fn post_json<T: for<'de> Deserialize<'de>>(
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<T, String> {
+    let resp = gloo_net::http::Request::post(&format!("{API_BASE}{path}"))
+        .json(body)
         .map_err(|e| e.to_string())?
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .json::<T>()
-        .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    read_json(resp).await
 }
 
-// ── Components ────────────────────────────────────────────────────────────────
+// ── Root: the mID auth gate ───────────────────────────────────────────────────
 
 #[component]
 fn App() -> Element {
-    let mut source = use_signal(|| ".".to_string());
-    let mut health = use_signal(|| None::<Result<Health, String>>);
-    let mut gate = use_signal(|| None::<Result<GateResult, String>>);
-    let mut analysis = use_signal(|| None::<Result<Analysis, String>>);
-
+    let session = use_signal(|| None::<Session>);
     rsx! {
         style { {CSS} }
-        div { class: "app",
-            header {
-                h1 { "Deputy" }
+        {match session.read().clone() {
+            Some(s) => rsx! { Dashboard { session: s, sess: session } },
+            None => rsx! { Landing { sess: session } },
+        }}
+    }
+}
+
+// ── Landing page: sign in with mID (+ dev access) ─────────────────────────────
+
+#[component]
+fn Landing(sess: Signal<Option<Session>>) -> Element {
+    let mut sess = sess;
+    let mut error = use_signal(|| None::<String>);
+    let mut busy = use_signal(|| false);
+
+    rsx! {
+        div { class: "landing",
+            div { class: "login-card",
+                div { class: "brand", "Deputy" }
                 p { class: "tag", "Your personally-owned, verified dependency vault." }
-                div { class: "session",
-                    {match &*health.read() {
-                        Some(Ok(h)) => rsx! { span { class: "ok", "● signed in — {h.did}" } },
-                        Some(Err(e)) => rsx! { span { class: "err", "● API offline — {e}" } },
-                        None => rsx! { span { class: "muted", "not connected" } },
+                p { class: "muted login-hint", "Sign in with your MATA mID to continue." }
+                button {
+                    class: "primary big",
+                    disabled: busy(),
+                    onclick: move |_| {
+                        busy.set(true);
+                        error.set(None);
+                        spawn(async move {
+                            match get_json::<Session>("/health").await {
+                                Ok(s) => sess.set(Some(s)),
+                                Err(e) => error.set(Some(e)),
+                            }
+                            busy.set(false);
+                        });
+                    },
+                    {if busy() { "Signing in…" } else { "Sign in with mID" }}
+                }
+                div { class: "divider", span { "dev" } }
+                button {
+                    class: "dev big",
+                    disabled: busy(),
+                    onclick: move |_| {
+                        busy.set(true);
+                        error.set(None);
+                        spawn(async move {
+                            match get_json::<Session>("/health").await {
+                                Ok(s) => sess.set(Some(s)),
+                                Err(e) => error.set(Some(e)),
+                            }
+                            busy.set(false);
+                        });
+                    },
+                    "⚙ Dev access — skip mID"
+                }
+                {match &*error.read() {
+                    Some(e) => rsx! {
+                        p { class: "err", "Couldn't reach the API ({e}). Is `deputy serve` running?" }
+                    },
+                    None => rsx! {},
+                }}
+            }
+            p { class: "footnote muted", "Dev access enters with a local identity and no mID verification — for development only." }
+        }
+    }
+}
+
+// ── Authenticated shell: sidebar + tabbed content ─────────────────────────────
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    GitHub,
+    Infrastructure,
+    Scan,
+    Heartbeat,
+    Analytics,
+    Production,
+}
+
+#[component]
+fn Dashboard(session: Session, sess: Signal<Option<Session>>) -> Element {
+    let mut sess = sess;
+    let tab = use_signal(|| Tab::GitHub);
+
+    rsx! {
+        div { class: "shell",
+            nav { class: "sidebar",
+                div { class: "brand sb-brand", "Deputy" }
+                div { class: "nav",
+                    NavItem { tab, this: Tab::GitHub, label: "GitHub" }
+                    NavItem { tab, this: Tab::Infrastructure, label: "Infrastructure" }
+                    NavItem { tab, this: Tab::Scan, label: "Scan Dependencies" }
+                    NavItem { tab, this: Tab::Heartbeat, label: "Social Heartbeat" }
+                    NavItem { tab, this: Tab::Analytics, label: "Dep Analytics" }
+                    NavItem { tab, this: Tab::Production, label: "Production Dependencies" }
+                }
+                div { class: "sb-footer",
+                    span { class: "did", "● {session.did}" }
+                    {if !session.mid_active {
+                        rsx! { span { class: "badge", "local mode" } }
+                    } else {
+                        rsx! { span { class: "badge mid", "mID" } }
                     }}
-                    button {
-                        onclick: move |_| {
-                            spawn(async move {
-                                health.set(Some(get_json::<Health>("/health").await));
-                            });
-                        },
-                        "Sign in with mID"
+                    button { class: "ghost", onclick: move |_| sess.set(None), "Sign out" }
+                }
+            }
+            main { class: "content",
+                {match tab() {
+                    Tab::GitHub => rsx! { GitHubTab {} },
+                    Tab::Infrastructure => rsx! { InfrastructureTab {} },
+                    Tab::Scan => rsx! { ScanTab {} },
+                    Tab::Heartbeat => rsx! { HeartbeatTab {} },
+                    Tab::Analytics => rsx! { AnalyticsTab {} },
+                    Tab::Production => rsx! { ProductionTab {} },
+                }}
+            }
+        }
+    }
+}
+
+#[component]
+fn NavItem(tab: Signal<Tab>, this: Tab, label: String) -> Element {
+    let mut tab = tab;
+    let cls = if tab() == this {
+        "nav-item active"
+    } else {
+        "nav-item"
+    };
+    rsx! {
+        button { class: "{cls}", onclick: move |_| tab.set(this), "{label}" }
+    }
+}
+
+// ── GitHub tab: connect, select repos, name a folder, download + analyze ──────
+
+#[component]
+fn GitHubTab() -> Element {
+    let mut token = use_signal(String::new);
+    let mut repos = use_signal(|| None::<Result<Vec<Repo>, String>>);
+    let mut connecting = use_signal(|| false);
+    let mut selected = use_signal(HashSet::<String>::new);
+    let mut folder = use_signal(|| "MATA Infra".to_string());
+    let mut downloading = use_signal(|| false);
+    let mut progress = use_signal(|| None::<ProgressView>);
+    let mut result = use_signal(|| None::<Result<FolderSummary, String>>);
+
+    // If the server already holds a PAT (from earlier in the session), restore the repo list.
+    use_effect(move || {
+        spawn(async move {
+            if let Ok(list) = get_json::<Vec<Repo>>("/github/repos").await {
+                repos.set(Some(Ok(list)));
+            }
+        });
+    });
+
+    let snapshot = repos.read().clone();
+    rsx! {
+        section { class: "panel",
+            div { class: "panel-head", h2 { "GitHub" } }
+            {match snapshot {
+                Some(Ok(list)) => rsx! {
+                    p { class: "muted", "{list.len()} repositories — select which to download." }
+                    ul { class: "repolist",
+                        for r in list.iter() {
+                            li { class: "repo-row",
+                                div { class: "repo-info",
+                                    span { class: "repo-name", "{r.full_name}" }
+                                    {if r.private { rsx! { span { class: "badge", "private" } } } else { rsx! {} }}
+                                    {match &r.language {
+                                        Some(lang) => rsx! { span { class: "lang-tag", "{lang}" } },
+                                        None => rsx! {},
+                                    }}
+                                }
+                                input {
+                                    r#type: "checkbox",
+                                    checked: selected.read().contains(&r.full_name),
+                                    onclick: {
+                                        let name = r.full_name.clone();
+                                        move |_| {
+                                            let name = name.clone();
+                                            selected.with_mut(|s| {
+                                                if !s.remove(&name) {
+                                                    s.insert(name);
+                                                }
+                                            });
+                                        }
+                                    },
+                                }
+                            }
+                        }
                     }
-                }
-            }
-
-            section { class: "controls",
-                label { "Source" }
-                input {
-                    value: "{source}",
-                    oninput: move |e| source.set(e.value()),
-                    placeholder: "repo directory or Cargo.lock path",
-                }
-                button {
-                    onclick: move |_| {
-                        let src = source();
-                        spawn(async move { gate.set(Some(post_source::<GateResult>("/gate", &src).await)); });
-                    },
-                    "Run deploy gate"
-                }
-                button {
-                    onclick: move |_| {
-                        let src = source();
-                        spawn(async move { analysis.set(Some(post_source::<Analysis>("/analyze", &src).await)); });
-                    },
-                    "Analyze"
-                }
-            }
-
-            {match &*gate.read() {
-                Some(result) => rsx! { GatePanel { result: result.clone() } },
-                None => rsx! {},
-            }}
-
-            {match &*analysis.read() {
-                Some(result) => rsx! { AnalysisPanel { result: result.clone() } },
-                None => rsx! {},
+                    div { class: "folder-bar",
+                        input {
+                            value: "{folder}",
+                            oninput: move |e| folder.set(e.value()),
+                            placeholder: "folder name (e.g. MATA Infra)",
+                        }
+                        button {
+                            class: "primary",
+                            disabled: downloading() || selected.read().is_empty() || folder().trim().is_empty(),
+                            onclick: move |_| {
+                                let body = serde_json::json!({
+                                    "folder": folder().trim(),
+                                    "repos": selected.read().iter().cloned().collect::<Vec<_>>(),
+                                });
+                                downloading.set(true);
+                                progress.set(None);
+                                // Poll acquisition progress while the download runs.
+                                spawn(async move {
+                                    while downloading() {
+                                        if let Ok(p) = get_json::<Option<ProgressView>>("/github/download/progress").await {
+                                            progress.set(p);
+                                        }
+                                        gloo_timers::future::TimeoutFuture::new(400).await;
+                                    }
+                                    progress.set(None);
+                                });
+                                spawn(async move {
+                                    result.set(Some(post_json::<FolderSummary>("/github/download", &body).await));
+                                    downloading.set(false);
+                                });
+                            },
+                            {if downloading() { "Downloading…" } else { "Download and Analyze" }}
+                        }
+                    }
+                    {if downloading() {
+                        let prog = progress.read().clone();
+                        rsx! {
+                            div { class: "dl-progress",
+                                {match prog {
+                                    Some(p) if p.total > 0 => rsx! {
+                                        div { class: "dl-track", div { class: "dl-fill", style: "width: {p.done * 100 / p.total}%" } }
+                                        span { class: "muted dl-label", "acquiring {p.done} / {p.total} dependencies into the vault…" }
+                                    },
+                                    _ => rsx! {
+                                        div { class: "dl-track", div { class: "dl-fill indeterminate" } }
+                                        span { class: "muted dl-label", "fetching lockfiles…" }
+                                    },
+                                }}
+                            }
+                        }
+                    } else { rsx! {} }}
+                    {match &*result.read() {
+                        Some(Ok(f)) => rsx! { DownloadResult { folder: f.clone() } },
+                        Some(Err(e)) => rsx! { p { class: "err", "Download failed — {e}" } },
+                        None => rsx! {},
+                    }}
+                },
+                other => rsx! {
+                    div { class: "gh-connect",
+                        input {
+                            r#type: "password",
+                            value: "{token}",
+                            oninput: move |e| token.set(e.value()),
+                            placeholder: "fine-grained GitHub PAT (read access to your repos)",
+                        }
+                        button {
+                            class: "gh",
+                            disabled: connecting(),
+                            onclick: move |_| {
+                                let body = serde_json::json!({ "token": token() });
+                                connecting.set(true);
+                                spawn(async move {
+                                    let r = match post_json::<serde_json::Value>("/github/connect", &body).await {
+                                        Ok(_) => get_json::<Vec<Repo>>("/github/repos").await,
+                                        Err(e) => Err(e),
+                                    };
+                                    repos.set(Some(r));
+                                    connecting.set(false);
+                                });
+                            },
+                            {if connecting() { "Connecting…" } else { "Connect GitHub" }}
+                        }
+                    }
+                    {match other {
+                        Some(Err(e)) => rsx! { p { class: "err", "Couldn't connect — {e}" } },
+                        _ => rsx! {},
+                    }}
+                    p { class: "muted gh-hint",
+                        "Paste a fine-grained personal access token with read access to your "
+                        "repositories. It's held in memory for this session only."
+                    }
+                },
             }}
         }
     }
 }
 
 #[component]
-fn GatePanel(result: Result<GateResult, String>) -> Element {
+fn DownloadResult(folder: FolderSummary) -> Element {
+    let total_deps: usize = folder.repos.iter().map(|r| r.deps).sum();
+    let total_acq: usize = folder.repos.iter().map(|r| r.acquired).sum();
     rsx! {
-        section { class: "panel",
-            h2 { "Deploy gate" }
-            {match result {
-                Ok(GateResult::Allowed { cleared }) => rsx! {
-                    div { class: "verdict allowed", "✓ ALLOWED — {cleared} dependencies promoted, clean, and receipted" }
-                },
-                Ok(GateResult::Blocked { violations }) => rsx! {
-                    div { class: "verdict blocked", "✗ BLOCKED — {violations.len()} violation(s)" }
-                    ul { class: "violations",
-                        for v in violations.iter() {
-                            li { strong { "{v.name} {v.version}" } " — {v.reason}" }
+        section { class: "panel result",
+            h3 { "✓ {folder.name} — {total_acq} of {total_deps} dependencies acquired into the vault" }
+            table {
+                tr { th { "repository" } th { class: "num", "deps" } th { class: "num", "acquired" } th { "status" } }
+                for r in folder.repos.iter() {
+                    tr {
+                        td { "{r.full_name}" }
+                        td { class: "num", "{r.deps}" }
+                        td { class: "num", "{r.acquired}" }
+                        td {
+                            {match &r.error {
+                                Some(e) => rsx! { span { class: "err", "{e}" } },
+                                None if r.lockfile_found => rsx! { span { class: "ok", "✓ sealed" } },
+                                None => rsx! { span { class: "muted", "no Cargo.lock" } },
+                            }}
                         }
                     }
-                },
-                Err(e) => rsx! { div { class: "err", "error: {e}" } },
-            }}
+                }
+            }
         }
     }
 }
 
+// ── Infrastructure tab: the folders you've created ────────────────────────────
+
 #[component]
-fn AnalysisPanel(result: Result<Analysis, String>) -> Element {
+fn InfrastructureTab() -> Element {
+    let mut folders = use_resource(|| async { get_json::<Vec<FolderSummary>>("/folders").await });
+    let mut confirming = use_signal(|| None::<String>);
+    let mut busy = use_signal(|| false);
+
     rsx! {
         section { class: "panel",
-            h2 { "Analysis" }
-            {match result {
-                Ok(a) => rsx! {
-                    p { class: "muted", "{a.inspected} of {a.total_crates} crates inspected" }
-                    h3 { "Languages" }
-                    table { class: "lang",
-                        for (lang, lines) in a.language_report.by_language.iter() {
-                            tr { td { "{lang}" } td { class: "num", "{lines}" } }
-                        }
-                    }
-                    h3 { "Critical points of failure" }
-                    table { class: "risk",
-                        tr { th { "score" } th { "crate" } th { "blast radius" } }
-                        for r in a.risks.iter().take(12) {
-                            tr {
-                                td { class: "num", "{r.score:.1}" }
-                                td { "{r.name} {r.version}" }
-                                td { class: "num", "{r.blast_radius}" }
+            div { class: "panel-head", h2 { "Infrastructure" } }
+            {match &*folders.read() {
+                None => rsx! { p { class: "muted", "Loading…" } },
+                Some(Ok(list)) if list.is_empty() => rsx! {
+                    p { class: "muted", "No infrastructure folders yet — create one from the GitHub tab." }
+                },
+                Some(Ok(list)) => rsx! {
+                    for f in list.iter() {
+                        div { class: "folder-card",
+                            div { class: "folder-head",
+                                strong { "{f.name}" }
+                                div { class: "folder-actions",
+                                    span { class: "muted", "{f.repos.len()} repos" }
+                                    button {
+                                        class: "ghost danger",
+                                        onclick: {
+                                            let name = f.name.clone();
+                                            move |_| confirming.set(Some(name.clone()))
+                                        },
+                                        "Remove"
+                                    }
+                                }
+                            }
+                            ul { class: "repolist",
+                                for r in f.repos.iter() {
+                                    li { class: "repo-row",
+                                        span { class: "repo-name", "{r.full_name}" }
+                                        span { class: "muted", "{r.acquired}/{r.deps} acquired" }
+                                    }
+                                }
                             }
                         }
                     }
                 },
-                Err(e) => rsx! { div { class: "err", "error: {e}" } },
+                Some(Err(e)) => rsx! { p { class: "err", "Couldn't load folders — {e}" } },
             }}
+        }
+        {match confirming() {
+            Some(name) => {
+                let confirm_name = name.clone();
+                rsx! {
+                    div { class: "modal-overlay",
+                        div { class: "modal",
+                            h3 { "Remove “{name}”?" }
+                            p { class: "muted", "This deletes the folder and its repositories from Deputy. This can't be undone." }
+                            div { class: "modal-actions",
+                                button {
+                                    class: "ghost",
+                                    disabled: busy(),
+                                    onclick: move |_| confirming.set(None),
+                                    "Cancel"
+                                }
+                                button {
+                                    class: "danger",
+                                    disabled: busy(),
+                                    onclick: move |_| {
+                                        let body = serde_json::json!({ "name": confirm_name });
+                                        busy.set(true);
+                                        spawn(async move {
+                                            let _ = post_json::<serde_json::Value>("/folders/delete", &body).await;
+                                            busy.set(false);
+                                            confirming.set(None);
+                                            folders.restart();
+                                        });
+                                    },
+                                    {if busy() { "Removing…" } else { "Remove" }}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            None => rsx! {},
+        }}
+    }
+}
+
+// ── Scan Dependencies tab: pick an infrastructure, scan its repos ──────────────
+
+#[component]
+fn ScanTab() -> Element {
+    let folders = use_resource(|| async { get_json::<Vec<FolderSummary>>("/folders").await });
+    let mut scanning = use_signal(|| None::<String>);
+    let mut result = use_signal(|| None::<Result<FolderScanReport, String>>);
+    let mut advisories = use_signal(|| None::<usize>);
+    let mut loading_adv = use_signal(|| false);
+    let mut nv_result = use_signal(|| None::<Result<NewVersionReport, String>>);
+    let mut nv_scanning = use_signal(|| None::<String>);
+
+    use_effect(move || {
+        spawn(async move {
+            if let Ok(v) = get_json::<serde_json::Value>("/advisories").await {
+                advisories.set(
+                    v.get("advisories")
+                        .and_then(|a| a.as_u64())
+                        .map(|n| n as usize),
+                );
+            }
+        });
+    });
+
+    rsx! {
+        section { class: "panel",
+            div { class: "panel-head", h2 { "Scan Dependencies" } }
+            div { class: "advisory-bar",
+                {match advisories() {
+                    Some(n) if n > 0 => rsx! { span { class: "ok", "● {n} RUSTSEC advisories loaded" } },
+                    _ => rsx! { span { class: "muted", "no advisory DB loaded — scans won't flag CVEs yet" } },
+                }}
+                button {
+                    class: "gh",
+                    disabled: loading_adv(),
+                    onclick: move |_| {
+                        loading_adv.set(true);
+                        spawn(async move {
+                            if let Ok(v) = post_json::<serde_json::Value>("/advisories/rustsec", &serde_json::json!({})).await {
+                                advisories.set(v.get("advisories").and_then(|a| a.as_u64()).map(|n| n as usize));
+                            }
+                            loading_adv.set(false);
+                        });
+                    },
+                    {if loading_adv() { "Loading RUSTSEC…" } else { "Load RUSTSEC advisories" }}
+                }
+            }
+            {match &*folders.read() {
+                None => rsx! { p { class: "muted", "Loading…" } },
+                Some(Ok(list)) if list.is_empty() => rsx! {
+                    p { class: "muted", "No infrastructure to scan yet — create a folder in the GitHub tab." }
+                },
+                Some(Ok(list)) => rsx! {
+                    p { class: "muted scan-hint", "Select an infrastructure to scan its repositories' dependencies." }
+                    for f in list.iter() {
+                        div { class: "folder-card",
+                            div { class: "folder-head",
+                                strong { "{f.name}" }
+                                div { class: "folder-actions",
+                                    span { class: "muted", "{f.repos.len()} repos" }
+                                    button {
+                                        class: "primary",
+                                        disabled: scanning().is_some(),
+                                        onclick: {
+                                            let name = f.name.clone();
+                                            move |_| {
+                                                let name = name.clone();
+                                                let body = serde_json::json!({ "name": name });
+                                                scanning.set(Some(name));
+                                                result.set(None);
+                                                spawn(async move {
+                                                    result.set(Some(post_json::<FolderScanReport>("/folders/scan", &body).await));
+                                                    scanning.set(None);
+                                                });
+                                            }
+                                        },
+                                        {if scanning() == Some(f.name.clone()) { "Scanning…" } else { "Scan" }}
+                                    }
+                                    button {
+                                        class: "ghost",
+                                        disabled: nv_scanning().is_some(),
+                                        onclick: {
+                                            let name = f.name.clone();
+                                            move |_| {
+                                                let name = name.clone();
+                                                let body = serde_json::json!({ "name": name });
+                                                nv_scanning.set(Some(name));
+                                                nv_result.set(None);
+                                                spawn(async move {
+                                                    nv_result.set(Some(post_json::<NewVersionReport>("/folders/scan-new-versions", &body).await));
+                                                    nv_scanning.set(None);
+                                                });
+                                            }
+                                        },
+                                        {if nv_scanning() == Some(f.name.clone()) { "Checking…" } else { "Scan for updates" }}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                Some(Err(e)) => rsx! { p { class: "err", "Couldn't load folders — {e}" } },
+            }}
+        }
+        {match &*result.read() {
+            Some(Ok(report)) => rsx! { ScanReportPanel { report: report.clone() } },
+            Some(Err(e)) => rsx! { section { class: "panel", p { class: "err", "Scan failed — {e}" } } },
+            None => rsx! {},
+        }}
+        {match &*nv_result.read() {
+            Some(Ok(report)) => rsx! { NewVersionView { report: report.clone() } },
+            Some(Err(e)) => rsx! { section { class: "panel", p { class: "err", "Update scan failed — {e}" } } },
+            None => rsx! {},
+        }}
+    }
+}
+
+#[component]
+fn ScanReportPanel(report: FolderScanReport) -> Element {
+    let total_findings: usize = report.repos.iter().map(|r| r.findings.len()).sum();
+    let total_deps: usize = report.repos.iter().map(|r| r.deps).sum();
+    rsx! {
+        section { class: "panel result",
+            h3 { "Scan — {report.name}" }
+            p { class: "muted", "{report.repos.len()} repos · {total_deps} dependencies scanned · {total_findings} findings" }
+            for r in report.repos.iter() {
+                ScanRepoRow { r: r.clone() }
+            }
+        }
+    }
+}
+
+#[component]
+fn ScanRepoRow(r: RepoScanResult) -> Element {
+    rsx! {
+        div { class: "scan-repo",
+            div { class: "scan-repo-head",
+                strong { "{r.full_name}" }
+                {
+                    if let Some(e) = &r.error {
+                        rsx! { span { class: "err", "{e}" } }
+                    } else if !r.lockfile_found {
+                        rsx! { span { class: "muted", "no Cargo.lock" } }
+                    } else if r.findings.is_empty() {
+                        rsx! { span { class: "ok", "✓ {r.deps} clean" } }
+                    } else {
+                        rsx! { span { class: "warn", "{r.findings.len()} findings" } }
+                    }
+                }
+            }
+            {if r.findings.is_empty() {
+                rsx! {}
+            } else {
+                rsx! {
+                    ul { class: "findings",
+                        for f in r.findings.iter() {
+                            li {
+                                span { class: "sev", "{f.severity}" }
+                                strong { " {f.id}" }
+                                " — {f.summary} ({f.dep})"
+                            }
+                        }
+                    }
+                }
+            }}
+        }
+    }
+}
+
+#[component]
+fn NewVersionView(report: NewVersionReport) -> Element {
+    rsx! {
+        section { class: "panel result",
+            h3 { "New versions — {report.name}" }
+            {if report.entries.is_empty() {
+                rsx! { p { class: "muted", "Every dependency is on its latest release." } }
+            } else {
+                rsx! {
+                    p { class: "muted summary",
+                        "{report.entries.len()} dependencies have newer releases — both versions are now staged for review."
+                    }
+                    table {
+                        tr { th { "dependency" } th { "current" } th { "new (pending Social Heartbeat)" } }
+                        for e in report.entries.iter() {
+                            tr {
+                                td { "{e.name}" }
+                                td {
+                                    span { class: "muted", "{e.production} " }
+                                    {if e.in_production {
+                                        rsx! { span { class: "rb build", "in production" } }
+                                    } else {
+                                        rsx! { span { class: "badge", "staging" } }
+                                    }}
+                                }
+                                td {
+                                    span { "{e.staged} " }
+                                    {if e.staged_ok {
+                                        rsx! { span { class: "ok", "✓ staged" } }
+                                    } else {
+                                        rsx! { span { class: "err", "stage failed" } }
+                                    }}
+                                }
+                            }
+                        }
+                    }
+                }
+            }}
+        }
+    }
+}
+
+// ── Dep Analytics tab: pick an infrastructure, break dependencies down by language ────────────
+
+fn pct(part: usize, total: usize) -> usize {
+    if total == 0 {
+        0
+    } else {
+        (part * 100 / total).max(if part > 0 { 1 } else { 0 })
+    }
+}
+
+#[component]
+fn AnalyticsTab() -> Element {
+    let folders = use_resource(|| async { get_json::<Vec<FolderSummary>>("/folders").await });
+    let mut analytics = use_signal(|| None::<Result<DepAnalytics, String>>);
+    let mut loading = use_signal(|| false);
+    let mut lang_filter = use_signal(String::new);
+    let mut f_build = use_signal(|| false);
+    let mut f_proc = use_signal(|| false);
+    let mut f_native = use_signal(|| false);
+    let mut f_unsafe = use_signal(|| false);
+    let mut held = use_signal(HashSet::<String>::new);
+
+    rsx! {
+        section { class: "panel",
+            div { class: "panel-head", h2 { "Dep Analytics" } }
+            div { class: "analytics-controls",
+                label { "Infrastructure" }
+                select {
+                    onchange: move |e| {
+                        let name = e.value();
+                        lang_filter.set(String::new());
+                        f_build.set(false);
+                        f_proc.set(false);
+                        f_native.set(false);
+                        f_unsafe.set(false);
+                        held.write().clear();
+                        analytics.set(None);
+                        if name.is_empty() {
+                            return;
+                        }
+                        loading.set(true);
+                        let body = serde_json::json!({ "name": name });
+                        spawn(async move {
+                            analytics.set(Some(post_json::<DepAnalytics>("/folders/analytics", &body).await));
+                            loading.set(false);
+                        });
+                    },
+                    option { value: "", "Select an infrastructure…" }
+                    {match &*folders.read() {
+                        Some(Ok(list)) => rsx! {
+                            for f in list.iter() {
+                                option { value: "{f.name}", "{f.name}" }
+                            }
+                        },
+                        _ => rsx! {},
+                    }}
+                }
+                {match &*analytics.read() {
+                    Some(Ok(a)) => rsx! {
+                        label { "Language" }
+                        select {
+                            onchange: move |e| lang_filter.set(e.value()),
+                            option { value: "", "All languages" }
+                            for ls in a.by_language.iter() {
+                                option { value: "{ls.language}", "{ls.language}" }
+                            }
+                        }
+                    },
+                    _ => rsx! {},
+                }}
+            }
+
+            {match &*analytics.read() {
+                Some(Ok(_)) => rsx! {
+                    div { class: "filter-chips",
+                        span { class: "chips-label", "Risk filters:" }
+                        FilterChip { active: f_build, label: "Build script" }
+                        FilterChip { active: f_proc, label: "Proc-macro" }
+                        FilterChip { active: f_native, label: "Native / FFI" }
+                        FilterChip { active: f_unsafe, label: "Unsafe" }
+                    }
+                },
+                _ => rsx! {},
+            }}
+
+            {if loading() {
+                rsx! { p { class: "muted", "Downloading + inspecting dependency crates… (first run can take a moment; results are cached)" } }
+            } else {
+                match &*analytics.read() {
+                    None => rsx! { p { class: "muted", "Pick an infrastructure to break its dependencies down by language and supply-chain risk." } },
+                    Some(Ok(a)) => rsx! { AnalyticsView {
+                        a: a.clone(),
+                        lang: lang_filter(),
+                        build_filter: f_build(),
+                        proc_macro: f_proc(),
+                        native: f_native(),
+                        unsafe_flag: f_unsafe(),
+                        held,
+                    } },
+                    Some(Err(e)) => rsx! { p { class: "err", "Analytics failed — {e}" } },
+                }
+            }}
+        }
+    }
+}
+
+#[component]
+fn FilterChip(active: Signal<bool>, label: String) -> Element {
+    let mut active = active;
+    let cls = if active() { "chip active" } else { "chip" };
+    rsx! {
+        button {
+            class: "{cls}",
+            onclick: move |_| {
+                let v = active();
+                active.set(!v);
+            },
+            "{label}"
+        }
+    }
+}
+
+#[component]
+fn AnalyticsView(
+    a: DepAnalytics,
+    lang: String,
+    build_filter: bool,
+    proc_macro: bool,
+    native: bool,
+    unsafe_flag: bool,
+    held: Signal<HashSet<String>>,
+) -> Element {
+    let total_lines: usize = a.by_language.iter().map(|l| l.lines).sum();
+    let deps: Vec<DepLang> = a
+        .deps
+        .iter()
+        .filter(|d| {
+            (lang.is_empty() || d.languages.iter().any(|l| l == &lang))
+                && (!build_filter || d.has_build_script)
+                && (!proc_macro || d.is_proc_macro)
+                && (!native || d.links_native.is_some() || d.native_unsafe_lines > 0)
+                && (!unsafe_flag || d.unsafe_occurrences > 0)
+        })
+        .cloned()
+        .collect();
+    let mut pushing = use_signal(|| false);
+    let mut push_msg = use_signal(|| None::<String>);
+    let folder = a.name.clone();
+    let push_deps = a.deps.clone();
+    rsx! {
+        p { class: "muted summary",
+            "{a.analyzed} of {a.total_deps} crates inspected · {a.build_scripts} build scripts · "
+            "{a.proc_macros} proc-macros · {a.native_crates} native/FFI · {a.unsafe_crates} use unsafe"
+        }
+        div { class: "lang-bars",
+            for ls in a.by_language.iter() {
+                div { class: "lang-bar",
+                    div { class: "lang-bar-label",
+                        span { class: "lang-name", "{ls.language}" }
+                        span { class: "muted", "{ls.lines} lines · {ls.crates} crates" }
+                    }
+                    div { class: "bar-track",
+                        div { class: "bar-fill", style: "width: {pct(ls.lines, total_lines)}%" }
+                    }
+                }
+            }
+        }
+        h3 { "Dependencies ({deps.len()})" }
+        div { class: "prod-push-bar",
+            span { class: "muted", "Checked dependencies stay in staging — everything else clean is pushed to production." }
+            button {
+                class: "primary",
+                disabled: pushing(),
+                onclick: move |_| {
+                    let hold: Vec<serde_json::Value> = push_deps
+                        .iter()
+                        .filter(|d| held.read().contains(&format!("{}@{}", d.name, d.version)))
+                        .map(|d| serde_json::json!({ "name": d.name, "version": d.version }))
+                        .collect();
+                    let body = serde_json::json!({ "name": folder, "hold": hold });
+                    pushing.set(true);
+                    push_msg.set(None);
+                    spawn(async move {
+                        match post_json::<serde_json::Value>("/folders/promote", &body).await {
+                            Ok(v) => {
+                                let n = v.get("promoted").and_then(|x| x.as_u64()).unwrap_or(0);
+                                push_msg.set(Some(format!("✓ pushed {n} dependencies to production")));
+                            }
+                            Err(e) => push_msg.set(Some(format!("push failed — {e}"))),
+                        }
+                        pushing.set(false);
+                    });
+                },
+                {if pushing() { "Pushing…" } else { "Push to Production" }}
+            }
+        }
+        {match push_msg() {
+            Some(m) => rsx! { p { class: "muted", "{m}" } },
+            None => rsx! {},
+        }}
+        table {
+            tr { th { "" } th { "crate" } th { "languages" } th { "risk" } th { class: "num", "lines" } }
+            for d in deps.iter() {
+                DepRow { d: d.clone(), held }
+            }
+        }
+    }
+}
+
+#[component]
+fn DepRow(d: DepLang, held: Signal<HashSet<String>>) -> Element {
+    let mut held = held;
+    let key = format!("{}@{}", d.name, d.version);
+    let checked = held.read().contains(&key);
+    let langs = if d.languages.is_empty() {
+        "—".to_string()
+    } else {
+        d.languages.join(", ")
+    };
+    rsx! {
+        tr {
+            td {
+                input {
+                    r#type: "checkbox",
+                    checked,
+                    onclick: {
+                        let key = key.clone();
+                        move |_| {
+                            let key = key.clone();
+                            held.with_mut(|h| {
+                                if !h.remove(&key) {
+                                    h.insert(key);
+                                }
+                            });
+                        }
+                    },
+                }
+            }
+            td { "{d.name} {d.version}" }
+            td { class: "muted", "{langs}" }
+            td { class: "risk-badges",
+                {if d.has_build_script { rsx! { span { class: "rb build", "build" } } } else { rsx! {} }}
+                {if d.is_proc_macro { rsx! { span { class: "rb macro", "macro" } } } else { rsx! {} }}
+                {if d.links_native.is_some() || d.native_unsafe_lines > 0 { rsx! { span { class: "rb ffi", "native" } } } else { rsx! {} }}
+                {if d.unsafe_occurrences > 0 { rsx! { span { class: "rb unsafe", "unsafe {d.unsafe_occurrences}" } } } else { rsx! {} }}
+            }
+            td { class: "num", "{d.lines}" }
+        }
+    }
+}
+
+// ── Social Heartbeat tab: newer releases + public advisories on a folder's deps ───────────────
+
+#[component]
+fn HeartbeatTab() -> Element {
+    let folders = use_resource(|| async { get_json::<Vec<FolderSummary>>("/folders").await });
+    let mut report = use_signal(|| None::<Result<HeartbeatReport, String>>);
+    let mut loading = use_signal(|| false);
+
+    rsx! {
+        section { class: "panel",
+            div { class: "panel-head", h2 { "Social Heartbeat" } }
+            p { class: "muted scan-hint",
+                "Check an infrastructure's dependencies for newer releases on crates.io and any "
+                "publicly-disclosed advisories on the versions you're pinned to."
+            }
+            div { class: "analytics-controls",
+                label { "Infrastructure" }
+                select {
+                    onchange: move |e| {
+                        let name = e.value();
+                        report.set(None);
+                        if name.is_empty() { return; }
+                        loading.set(true);
+                        let body = serde_json::json!({ "name": name });
+                        spawn(async move {
+                            report.set(Some(post_json::<HeartbeatReport>("/folders/heartbeat", &body).await));
+                            loading.set(false);
+                        });
+                    },
+                    option { value: "", "Select an infrastructure…" }
+                    {match &*folders.read() {
+                        Some(Ok(list)) => rsx! {
+                            for f in list.iter() { option { value: "{f.name}", "{f.name}" } }
+                        },
+                        _ => rsx! {},
+                    }}
+                }
+            }
+            {if loading() {
+                rsx! { p { class: "muted", "Checking crates.io for the latest versions…" } }
+            } else {
+                match &*report.read() {
+                    None => rsx! {},
+                    Some(Ok(r)) => rsx! { HeartbeatView { report: r.clone() } },
+                    Some(Err(e)) => rsx! { p { class: "err", "Heartbeat failed — {e}" } },
+                }
+            }}
+        }
+    }
+}
+
+#[component]
+fn HeartbeatView(report: HeartbeatReport) -> Element {
+    let updates = report.entries.iter().filter(|e| e.update_available).count();
+    let flagged = report
+        .entries
+        .iter()
+        .filter(|e| !e.advisories.is_empty())
+        .count();
+    let mut entries = report.entries.clone();
+    // Advisories first, then update-available, then current.
+    entries.sort_by_key(|e| (e.advisories.is_empty(), !e.update_available));
+    rsx! {
+        p { class: "muted summary",
+            "{report.entries.len()} dependencies · {updates} with newer releases · {flagged} with advisories"
+        }
+        table {
+            tr { th { "dependency" } th { "pinned" } th { "latest" } th { "heartbeat" } }
+            for e in entries.iter() {
+                HeartbeatRow { e: e.clone() }
+            }
+        }
+    }
+}
+
+#[component]
+fn HeartbeatRow(e: HeartbeatEntry) -> Element {
+    let advisories = e.advisories.join(", ");
+    rsx! {
+        tr {
+            td { "{e.name}" }
+            td { class: "muted", "{e.current}" }
+            td {
+                {match &e.latest {
+                    Some(l) => rsx! { "{l}" },
+                    None => rsx! { span { class: "muted", "?" } },
+                }}
+            }
+            td {
+                {if !e.advisories.is_empty() {
+                    rsx! { span { class: "rb unsafe", "⚠ {advisories}" } }
+                } else if e.update_available {
+                    rsx! { span { class: "rb build", "↑ update available" } }
+                } else {
+                    rsx! { span { class: "ok", "✓ current" } }
+                }}
+            }
+        }
+    }
+}
+
+// ── Production Dependencies tab: the validated/promoted set ────────────────────────────────────
+
+#[component]
+fn ProductionTab() -> Element {
+    let mut prod = use_resource(|| async { get_json::<Vec<ProdDep>>("/production").await });
+    let folders = use_resource(|| async { get_json::<Vec<FolderSummary>>("/folders").await });
+    let mut promote_msg = use_signal(|| None::<String>);
+    let mut promoting = use_signal(|| false);
+
+    rsx! {
+        section { class: "panel",
+            div { class: "panel-head", h2 { "Production Dependencies" } }
+            p { class: "muted scan-hint",
+                "The dependency versions you've validated and promoted to production — clean-scanned, "
+                "content-addressed, and receipted. Scan a folder first, then promote it here."
+            }
+            div { class: "analytics-controls",
+                label { "Promote a scanned folder" }
+                select {
+                    disabled: promoting(),
+                    onchange: move |e| {
+                        let name = e.value();
+                        if name.is_empty() { return; }
+                        promoting.set(true);
+                        promote_msg.set(None);
+                        let body = serde_json::json!({ "name": name });
+                        spawn(async move {
+                            match post_json::<serde_json::Value>("/folders/promote", &body).await {
+                                Ok(v) => {
+                                    let n = v.get("promoted").and_then(|x| x.as_u64()).unwrap_or(0);
+                                    promote_msg.set(Some(format!("✓ promoted {n} validated dependencies")));
+                                    prod.restart();
+                                }
+                                Err(e) => promote_msg.set(Some(format!("promote failed — {e}"))),
+                            }
+                            promoting.set(false);
+                        });
+                    },
+                    option { value: "", "Select a folder to promote its clean deps…" }
+                    {match &*folders.read() {
+                        Some(Ok(list)) => rsx! {
+                            for f in list.iter() { option { value: "{f.name}", "{f.name}" } }
+                        },
+                        _ => rsx! {},
+                    }}
+                }
+                {if promoting() { rsx! { span { class: "muted", "promoting…" } } } else { rsx! {} }}
+            }
+            {match promote_msg() {
+                Some(m) => rsx! { p { class: "muted", "{m}" } },
+                None => rsx! {},
+            }}
+            {match &*prod.read() {
+                None => rsx! { p { class: "muted", "Loading…" } },
+                Some(Ok(list)) if list.is_empty() => rsx! {
+                    p { class: "muted", "No validated dependencies yet — scan a folder, then promote it above." }
+                },
+                Some(Ok(list)) => rsx! {
+                    p { class: "muted summary", "{list.len()} validated dependency versions" }
+                    table {
+                        tr { th { "crate" } th { "version" } th { "content hash" } }
+                        for d in list.iter() {
+                            ProdRow { d: d.clone() }
+                        }
+                    }
+                },
+                Some(Err(e)) => rsx! { p { class: "err", "Couldn't load — {e}" } },
+            }}
+        }
+    }
+}
+
+#[component]
+fn ProdRow(d: ProdDep) -> Element {
+    let short: String = d.hash.chars().take(16).collect();
+    rsx! {
+        tr {
+            td { "{d.name}" }
+            td { class: "muted", "{d.version}" }
+            td { class: "muted hash", "{short}…" }
         }
     }
 }
@@ -207,24 +1275,123 @@ fn AnalysisPanel(result: Result<Analysis, String>) -> Element {
 const CSS: &str = "
 * { box-sizing: border-box; }
 body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #0f1115; color: #e6e6e6; }
-.app { max-width: 880px; margin: 0 auto; padding: 24px; }
-header h1 { margin: 0; color: #8b5cf6; }
+.brand { font-size: 28px; font-weight: 700; color: #8b5cf6; letter-spacing: -0.5px; }
 .tag { color: #9aa0aa; margin: 4px 0 16px; }
-.session { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; }
-.ok { color: #34d399; } .err { color: #f87171; } .muted { color: #9aa0aa; }
-button { background: #8b5cf6; color: white; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+.muted { color: #9aa0aa; } .ok { color: #34d399; } .err { color: #f87171; }
+
+/* Landing / login */
+.landing { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px; }
+.login-card { background: #161922; border: 1px solid #2a2f3a; border-radius: 14px; padding: 36px 40px; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 12px 40px rgba(0,0,0,0.35); }
+.login-card .brand { font-size: 34px; }
+.login-hint { margin: 18px 0; }
+.footnote { font-size: 13px; max-width: 420px; text-align: center; }
+button.big { width: 100%; padding: 12px 16px; font-size: 15px; }
+button.dev { background: transparent; border: 1px dashed #3a4150; color: #9aa0aa; }
+button.dev:hover { background: #1c2029; color: #c4c9d4; border-color: #4a5160; }
+.divider { display: flex; align-items: center; text-align: center; color: #6b7280; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin: 14px 0; }
+.divider::before, .divider::after { content: \"\"; flex: 1; border-bottom: 1px solid #2a2f3a; }
+.divider span { padding: 0 10px; }
+
+/* Shell: sidebar + content */
+.shell { display: flex; min-height: 100vh; }
+.sidebar { width: 220px; background: #12151c; border-right: 1px solid #2a2f3a; padding: 20px 14px; display: flex; flex-direction: column; }
+.sb-brand { margin-bottom: 18px; padding: 0 6px; }
+.nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.nav-item { text-align: left; background: transparent; color: #c4c9d4; border: 0; padding: 10px 12px; border-radius: 6px; font-size: 14px; }
+.nav-item:hover { background: #1c2029; }
+.nav-item.active { background: rgba(139,92,246,0.15); color: #b794ff; }
+.sb-footer { display: flex; flex-direction: column; gap: 8px; font-size: 13px; padding: 0 6px; }
+.did { color: #34d399; word-break: break-all; }
+.content { flex: 1; padding: 24px 32px; max-width: 920px; }
+
+button { background: #8b5cf6; color: white; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-weight: 500; }
 button:hover { background: #7c3aed; }
-.controls { display: flex; gap: 10px; align-items: center; margin-bottom: 20px; }
-.controls label { color: #9aa0aa; }
-input { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #2a2f3a; background: #161922; color: #e6e6e6; }
+button:disabled { opacity: 0.5; cursor: default; }
+button.ghost { background: transparent; border: 1px solid #2a2f3a; color: #c4c9d4; }
+button.ghost:hover { background: #1c2029; }
+button.gh { background: #24292f; }
+button.gh:hover { background: #30363d; }
+input { padding: 8px; border-radius: 6px; border: 1px solid #2a2f3a; background: #161922; color: #e6e6e6; }
+input[type=checkbox] { width: 18px; height: 18px; accent-color: #8b5cf6; cursor: pointer; padding: 0; }
+
 .panel { background: #161922; border: 1px solid #2a2f3a; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-.panel h2 { margin-top: 0; }
-.verdict { padding: 10px; border-radius: 6px; font-weight: 600; }
-.verdict.allowed { background: rgba(52,211,153,0.12); color: #34d399; }
-.verdict.blocked { background: rgba(248,113,113,0.12); color: #f87171; }
-.violations { margin: 10px 0 0; }
-table { width: 100%; border-collapse: collapse; }
+.panel h2, .panel h3 { margin-top: 0; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+.panel-head h2 { margin: 0; }
+.result h3 { color: #34d399; }
+
+.gh-connect { display: flex; gap: 10px; align-items: center; margin: 12px 0 8px; }
+.gh-connect input { flex: 1; }
+.gh-hint { font-size: 13px; }
+
+.repolist { list-style: none; padding: 0; margin: 12px 0; }
+.repo-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid #2a2f3a; }
+.repo-info { display: flex; align-items: center; gap: 8px; }
+.repo-name { font-weight: 500; }
+.lang-tag { font-size: 11px; color: #9aa0aa; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #2a2f3a; color: #c4c9d4; text-transform: uppercase; letter-spacing: 0.5px; }
+.badge.mid { background: rgba(139,92,246,0.18); color: #b794ff; }
+
+.folder-bar { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
+.folder-bar input { flex: 1; }
+
+.dl-progress { margin-top: 12px; }
+.dl-track { height: 8px; background: #1c2029; border-radius: 999px; overflow: hidden; }
+.dl-fill { height: 100%; background: #8b5cf6; border-radius: 999px; transition: width 0.3s ease; }
+.dl-fill.indeterminate { width: 35%; animation: dl-indet 1.1s ease-in-out infinite; }
+@keyframes dl-indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+.dl-label { display: inline-block; margin-top: 6px; font-size: 13px; }
+
+.folder-card { border: 1px solid #2a2f3a; border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+.folder-head { display: flex; justify-content: space-between; align-items: center; }
+.folder-actions { display: flex; align-items: center; gap: 14px; }
+.folder-card .repolist { margin: 8px 0 0; }
+.folder-card .repo-row { padding: 6px 0; }
+
+button.danger { background: #b3261e; }
+button.danger:hover { background: #c5362e; }
+button.ghost.danger { background: transparent; border: 1px solid #5a2a2a; color: #f87171; }
+button.ghost.danger:hover { background: rgba(179,38,30,0.15); border-color: #7a3a3a; }
+
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { background: #161922; border: 1px solid #2a2f3a; border-radius: 12px; padding: 24px 26px; max-width: 420px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+.modal h3 { margin-top: 0; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+.advisory-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; padding: 10px 14px; background: #12151c; border: 1px solid #2a2f3a; border-radius: 8px; }
+.scan-hint { margin-bottom: 14px; }
+.warn { color: #fbbf24; }
+.scan-repo { padding: 10px 0; border-bottom: 1px solid #2a2f3a; }
+.scan-repo-head { display: flex; justify-content: space-between; align-items: center; }
+.findings { list-style: none; padding: 0; margin: 8px 0 0; }
+.findings li { padding: 6px 0; font-size: 14px; }
+.sev { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: rgba(251,191,36,0.15); color: #fbbf24; text-transform: uppercase; letter-spacing: 0.5px; }
+
+.analytics-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+.analytics-controls label { color: #9aa0aa; font-size: 14px; }
+select { padding: 8px 10px; border-radius: 6px; border: 1px solid #2a2f3a; background: #161922; color: #e6e6e6; }
+.lang-bars { margin: 8px 0 20px; display: flex; flex-direction: column; gap: 10px; }
+.lang-bar-label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+.lang-name { font-weight: 500; }
+.bar-track { height: 8px; background: #1c2029; border-radius: 999px; overflow: hidden; }
+.bar-fill { height: 100%; background: #8b5cf6; border-radius: 999px; }
+.summary { font-size: 13px; margin-bottom: 14px; }
+.filter-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.chips-label { color: #9aa0aa; font-size: 13px; margin-right: 2px; }
+.chip { background: transparent; border: 1px solid #2a2f3a; color: #c4c9d4; border-radius: 999px; padding: 5px 12px; font-size: 13px; }
+.chip:hover { background: #1c2029; }
+.chip.active { background: rgba(139,92,246,0.2); border-color: #8b5cf6; color: #c4b5fd; }
+.risk-badges { display: flex; gap: 5px; flex-wrap: wrap; }
+.rb { font-size: 10px; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+.rb.build { background: rgba(96,165,250,0.16); color: #60a5fa; }
+.rb.macro { background: rgba(167,139,250,0.16); color: #a78bfa; }
+.rb.ffi { background: rgba(251,146,60,0.16); color: #fb923c; }
+.rb.unsafe { background: rgba(248,113,113,0.16); color: #f87171; }
+
+table { width: 100%; border-collapse: collapse; margin-top: 10px; }
 td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid #2a2f3a; }
 th { color: #9aa0aa; font-weight: 500; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
+.hash { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+.prod-push-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 14px 0 6px; }
 ";

@@ -8,7 +8,7 @@ use deputy_store::Vault;
 use semver::VersionReq;
 use tempfile::TempDir;
 
-use crate::{scan, Advisory, AdvisoryDb};
+use crate::{scan, Advisory, AdvisoryDb, VulnMatch};
 
 const PW: &[u8] = b"scan passphrase";
 
@@ -65,7 +65,7 @@ fn matching_advisory_blocks_but_non_matching_version_is_clean() {
     db.add(Advisory {
         id: "RUSTSEC-2024-9999".into(),
         package: "vuln".into(),
-        vulnerable: VersionReq::parse("<2.0.0").unwrap(),
+        matcher: VulnMatch::Vulnerable(VersionReq::parse("<2.0.0").unwrap()),
         severity: Severity::High,
         title: "demo advisory".into(),
     });

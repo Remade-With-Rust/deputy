@@ -25,6 +25,13 @@ spacedb-access = "=0.1.0"
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros"] }
 tower-http = { version = "0.6", features = ["cors"] }
+# GitHub REST client (list/acquire the user's repos via a fine-grained PAT). rustls, no OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# RUSTSEC advisory-db importer: download + decompress the tarball, parse the TOML frontmatter.
+flate2 = "1"
+tar = "0.4"
+toml = "0.8"
+semver = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 

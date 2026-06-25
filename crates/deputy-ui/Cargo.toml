@@ -18,5 +18,6 @@ publish = false
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 dioxus = { version = "0.7", features = ["web"] }
 gloo-net = { version = "0.6", features = ["json"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

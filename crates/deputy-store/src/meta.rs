@@ -109,6 +109,25 @@ impl Vault {
             .map_err(|e| StoreError::Malformed(format!("crate-index hash: {e}")))?;
         Ok(Some(hash))
     }
+
+    /// List `(name, version, hash)` for every crate recorded in a store's index — e.g. the
+    /// validated dependencies promoted to [`StoreKind::Prod`].
+    pub fn list_store_crates(&self, kind: StoreKind) -> Result<Vec<(String, String, ContentHash)>> {
+        let prefix = format!("crate:{}:", store_tag(kind));
+        let mut out = Vec::new();
+        for (key, value) in self.metadata_entries()? {
+            let Some((name, version)) = key.strip_prefix(&prefix).and_then(|r| r.split_once(':'))
+            else {
+                continue;
+            };
+            if let Ok(hex) = std::str::from_utf8(&value) {
+                if let Ok(hash) = ContentHash::from_sha256_hex(hex) {
+                    out.push((name.to_owned(), version.to_owned(), hash));
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// The API-first [`MetadataStore`] contract, satisfied by the encrypted SpaceDB-backed store.

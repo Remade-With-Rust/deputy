@@ -21,12 +21,40 @@ use deputy_core::{Error, Result, Severity};
 use semver::{Version, VersionReq};
 use serde::Deserialize;
 
+/// How an advisory decides whether a version is affected.
+#[derive(Debug, Clone)]
+pub enum VulnMatch {
+    /// Versions satisfying this requirement are vulnerable (Deputy's TOML schema).
+    Vulnerable(VersionReq),
+    /// Vulnerable = not covered by any `patched` range and not by any `unaffected` range — the
+    /// RUSTSEC model. Correct for multi-branch fixes that a single requirement can't express.
+    NotPatched {
+        patched: Vec<VersionReq>,
+        unaffected: Vec<VersionReq>,
+    },
+}
+
+impl VulnMatch {
+    pub fn matches(&self, version: &Version) -> bool {
+        match self {
+            VulnMatch::Vulnerable(req) => req.matches(version),
+            VulnMatch::NotPatched {
+                patched,
+                unaffected,
+            } => {
+                !patched.iter().any(|r| r.matches(version))
+                    && !unaffected.iter().any(|r| r.matches(version))
+            }
+        }
+    }
+}
+
 /// A single security advisory affecting a package's versions.
 #[derive(Debug, Clone)]
 pub struct Advisory {
     pub id: String,
     pub package: String,
-    pub vulnerable: VersionReq,
+    pub matcher: VulnMatch,
     pub severity: Severity,
     pub title: String,
 }
@@ -63,7 +91,7 @@ impl AdvisoryDb {
             .get(name)
             .into_iter()
             .flatten()
-            .filter(|advisory| advisory.vulnerable.matches(version))
+            .filter(|advisory| advisory.matcher.matches(version))
             .collect()
     }
 
@@ -86,7 +114,7 @@ impl AdvisoryDb {
             db.add(Advisory {
                 id: raw.id,
                 package: raw.package,
-                vulnerable,
+                matcher: VulnMatch::Vulnerable(vulnerable),
                 severity,
                 title: raw.title,
             });

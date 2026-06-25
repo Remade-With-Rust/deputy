@@ -17,5 +17,5 @@ mod scan;
 #[cfg(test)]
 mod tests;
 
-pub use advisory::{Advisory, AdvisoryDb};
+pub use advisory::{Advisory, AdvisoryDb, VulnMatch};
 pub use scan::{scan, ScanReport};

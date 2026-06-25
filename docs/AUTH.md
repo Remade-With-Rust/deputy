@@ -156,18 +156,18 @@ key, but mID itself exports no such secret today.
 
 ## 10. Open questions
 
-1. **Use the private Rust reference directly?** — **Resolved: git dependency on the public
-   mID crates.** `deputy-id` depends on `mid-verify` from
-   [`github.com/Remade-With-Rust/mid`](https://github.com/Remade-With-Rust/mid), **pinned to a
-   rev** (Deputy practises its own thesis — a trust-base dependency never tracks a moving
-   branch). `verify` is implemented; 9 tests pass against real wallet-minted tokens (the test
-   harness mints them with `mid-issuer`/`kms-client` from the same pinned rev).
+1. **Use the private Rust reference directly?** — **Resolved: crates.io dependency on the
+   published mID crates.** `deputy-id` depends on `mid-verify` (and, in tests,
+   `mid-issuer`/`kms-client`) from crates.io at an **exact pin** (`=0.1.0`) — published from
+   [`github.com/Remade-With-Rust/mid`](https://github.com/Remade-With-Rust/mid) (Deputy practises
+   its own thesis — a trust-base dependency is frozen, never a moving range). `verify` is
+   implemented; 9 tests pass against real wallet-minted tokens.
 
-   **Portability — resolved for mID.** The workspace no longer requires a local `mata-master`
-   checkout to build the identity path; `cargo` fetches the pinned rev. (`cargo fmt --all` no
-   longer escapes into mata-master via this dep — though SpaceDB is still a `mata-master` path
-   dep, so keep using scoped `-p` flags until that also moves to git.) `cargo deny` trusts the
-   `Remade-With-Rust` GitHub org as a first-party source (`[sources.allow-org]`).
+   **Portability — fully resolved.** Both the mID crates *and* the SpaceDB crates now resolve
+   from crates.io (`=0.1.0`); **no path or git dependencies remain**, so the workspace builds
+   anywhere and every `deputy-*` crate is publishable (`mata-master` is no longer required —
+   `cargo fmt --all` can no longer escape into it, but keep scoped `-p` flags out of habit). See
+   [`RELEASING.md`](../RELEASING.md).
 
    **Accepted cost (unchanged):** the chain `mid-verify → mid-issuer → kms-client` still drags a
    full async HTTP/TLS stack (`reqwest`/`tokio`/`hyper`/`rustls`/`ring`) into the identity path,

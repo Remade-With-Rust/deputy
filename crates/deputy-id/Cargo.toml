@@ -7,24 +7,23 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# Depends on the public MATA mID crates by git, so the workspace no longer requires a local
-# mata-master checkout. Not yet on crates.io, so still publish=false (see docs/AUTH.md §10).
-publish = false
-
+keywords = ["identity", "authentication", "did", "jwt", "mid"]
+categories = ["authentication", "cryptography"]
 [dependencies]
-# The public MATA mID reference (RP-side verification) — github.com/Remade-With-Rust/mid, the
-# authoritative source the JS SDK (@matanetwork/sovereign-id) mirrors. Pinned to a rev: Deputy
-# practises its own thesis and never tracks a moving branch for a trust-base dependency. Chain:
-# mid-verify -> mid-issuer -> kms-client (pulls reqwest/tokio; see AUTH.md §10).
-mid-verify = { git = "https://github.com/Remade-With-Rust/mid", rev = "a31b9b48f53f82defdba49ca743e4eaf930fbca7" }
+# The public MATA mID reference (RP-side verification) — published from
+# github.com/Remade-With-Rust/mid, the authoritative source the JS SDK
+# (@matanetwork/sovereign-id) mirrors. Exact pin (`=`): Deputy practises its own thesis and
+# freezes the trust-base version. Chain: mid-verify -> mid-issuer -> kms-client (pulls
+# reqwest/tokio; see AUTH.md §10).
+mid-verify = "=0.1.0"
 thiserror = { workspace = true }
 getrandom = "0.3"
 
 [dev-dependencies]
 # Token-minting harness for tests: mint real wallet-style mID tokens, then verify them. Same
-# pinned rev as the verifier so the canonical wire format matches exactly.
-mid-issuer = { git = "https://github.com/Remade-With-Rust/mid", rev = "a31b9b48f53f82defdba49ca743e4eaf930fbca7" }
-kms-client = { git = "https://github.com/Remade-With-Rust/mid", rev = "a31b9b48f53f82defdba49ca743e4eaf930fbca7" }
+# pinned version as the verifier so the canonical wire format matches exactly.
+mid-issuer = "=0.1.0"
+kms-client = "=0.1.0"
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 sha2 = "0.10"
 base64 = "0.22"

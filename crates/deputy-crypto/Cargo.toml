@@ -7,6 +7,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+keywords = ["cryptography", "encryption", "argon2", "aes-gcm", "security"]
+categories = ["cryptography"]
 
 [dependencies]
 # Raw Argon2id KDF only (no PHC string / rand): keeps the RNG surface to one crate.

@@ -2364,7 +2364,8 @@ dependencies = [
 [[package]]
 name = "kms-client"
 version = "0.1.0"
-source = "git+https://github.com/Remade-With-Rust/mid?rev=a31b9b48f53f82defdba49ca743e4eaf930fbca7#a31b9b48f53f82defdba49ca743e4eaf930fbca7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "094cdbc3287d2b1960f2a36b25c11383a65975c75c8a7e37023de4c4ccd8299e"
 dependencies = [
  "getrandom 0.2.17",
  "kms-types",
@@ -2379,7 +2380,8 @@ dependencies = [
 [[package]]
 name = "kms-types"
 version = "0.1.0"
-source = "git+https://github.com/Remade-With-Rust/mid?rev=a31b9b48f53f82defdba49ca743e4eaf930fbca7#a31b9b48f53f82defdba49ca743e4eaf930fbca7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2b4dbf32a94c1ae8f3db371813cc46a9f03085985f91066eda307996bd95d1d"
 dependencies = [
  "base64",
  "serde",
@@ -2594,7 +2596,8 @@ dependencies = [
 [[package]]
 name = "mid-issuer"
 version = "0.1.0"
-source = "git+https://github.com/Remade-With-Rust/mid?rev=a31b9b48f53f82defdba49ca743e4eaf930fbca7#a31b9b48f53f82defdba49ca743e4eaf930fbca7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2f0994db6b701d9ec80d5d4d404fc5b86ac96259cfe178fe0dd99803278c4e1"
 dependencies = [
  "base64",
  "kms-client",
@@ -2608,7 +2611,8 @@ dependencies = [
 [[package]]
 name = "mid-verify"
 version = "0.1.0"
-source = "git+https://github.com/Remade-With-Rust/mid?rev=a31b9b48f53f82defdba49ca743e4eaf930fbca7#a31b9b48f53f82defdba49ca743e4eaf930fbca7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2837b9c72fc75798b8c003062d1d12752ed0767611e1919c33a0dbc2f193490d"
 dependencies = [
  "base64",
  "bs58",
@@ -3606,6 +3610,8 @@ dependencies = [
 [[package]]
 name = "spacedb-access"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a696d13f02b319946a35e43fdb43b6feddf64137e3841364dc62487ccf5553ba"
 dependencies = [
  "blake3",
  "getrandom 0.3.4",
@@ -3618,6 +3624,8 @@ dependencies = [
 [[package]]
 name = "spacedb-crdt"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1181c65fcf97d7b0697eff03c268ca3b68422fc902acc313d2bf29d03ffaf329"
 dependencies = [
  "serde",
  "serde_json",
@@ -3629,6 +3637,8 @@ dependencies = [
 [[package]]
 name = "spacedb-durability"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "417cd2a9b83ad38dc260ffe20b39141b20664ee092eeecdf69e2b93196c6e889"
 dependencies = [
  "blake3",
  "postcard",
@@ -3640,6 +3650,8 @@ dependencies = [
 [[package]]
 name = "spacedb-store"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6037d770383c51561555edcf5aa89c0ae5d101176dcd93e9c8529e359ec2440d"
 dependencies = [
  "aes-gcm",
  "blake3",

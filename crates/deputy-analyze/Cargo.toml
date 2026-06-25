@@ -7,6 +7,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+keywords = ["supply-chain", "dependencies", "analysis", "risk", "security"]
+categories = ["development-tools"]
 
 [dependencies]
 deputy-core = { path = "../deputy-core", version = "0.1.0" }

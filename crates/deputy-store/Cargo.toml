@@ -7,19 +7,20 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# Path-deps SpaceDB (not-yet-published) — see docs/AUTH.md §10 for the portability caveat.
-publish = false
+keywords = ["vault", "encryption", "storage", "content-addressed", "security"]
+categories = ["cryptography", "database-implementations"]
 
 [dependencies]
 deputy-core = { path = "../deputy-core", version = "0.1.0" }
 deputy-crypto = { path = "../deputy-crypto", version = "0.1.0" }
 # SpaceDB Layer 0 (Remade With Rust): the durable, transactional KV engine. Replaces our direct
 # redb dependency — redb is now an internal engine detail of SpaceDB. See docs/STORAGE.md §4.
-spacedb-store = { path = "../../../mata-master/packages/spacedb/spacedb-store" }
+# Exact pins (`=`): Deputy practises its own thesis and freezes the trust-base versions.
+spacedb-store = "=0.1.0"
 # SpaceDB Layer 2 (cold): Reed-Solomon erasure-coded vault snapshots (k-of-n recovery).
-spacedb-durability = { path = "../../../mata-master/packages/spacedb/spacedb-durability" }
+spacedb-durability = "=0.1.0"
 # SpaceDB Layer 1 — the Y-CRDT document model, for conflict-free multi-device metadata sync.
-spacedb-crdt = { path = "../../../mata-master/packages/spacedb/spacedb-crdt" }
+spacedb-crdt = "=0.1.0"
 postcard = { version = "1", features = ["use-std"] }
 sha2 = "0.10"
 serde = { workspace = true }

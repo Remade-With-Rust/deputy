@@ -1,6 +1,13 @@
 # Deputy
 
+[![CI](https://github.com/Remade-With-Rust/deputy/actions/workflows/ci.yml/badge.svg)](https://github.com/Remade-With-Rust/deputy/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/deputy-cli.svg)](https://crates.io/crates/deputy-cli)
+[![docs.rs](https://img.shields.io/docsrs/deputy-core)](https://docs.rs/deputy-core)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
 A repository for your portfolio of github codebases dependencies. Recursive dep acquisition, language understanding/analytics, storage, scanning, staging, and deployment.
+
+> Install the CLI: `cargo install deputy-cli` (provides the `deputy` binary). Embed the library: `deputy-api`. See [RELEASING.md](./RELEASING.md) for publishing and [CONTRIBUTING.md](./CONTRIBUTING.md) to hack on it.
 
 ## Coding Requirements
 

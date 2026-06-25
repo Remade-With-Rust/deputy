@@ -1,0 +1,16 @@
+# release-plz configuration — https://release-plz.dev/docs/config
+#
+# Drives automated, dependency-ordered crates.io releases from Conventional Commits.
+
+[workspace]
+# Maintain a CHANGELOG.md from commit messages.
+changelog_update = true
+# Create a GitHub Release for each published version.
+git_release_enable = true
+# Run a semver-compatibility check and surface breaking changes in the release PR.
+semver_check = true
+
+# deputy-ui is a wasm application, not a library — never release or publish it.
+[[package]]
+name = "deputy-ui"
+release = false

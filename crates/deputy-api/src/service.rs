@@ -90,6 +90,17 @@ pub struct HeartbeatReport {
     pub entries: Vec<HeartbeatEntry>,
 }
 
+/// A connected GitHub account: a fine-grained PAT plus a human label (its login by default).
+/// Held in memory for the session only — never persisted.
+#[derive(Clone)]
+pub struct GhConnection {
+    pub label: String,
+    pub token: String,
+    /// Optional org/user to scope the repo listing to. Empty = list by the token user's
+    /// affiliations (GitHub's `/user/repos`), which spans every org the user belongs to.
+    pub owner: String,
+}
+
 /// A validated (promoted) dependency in the production store.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ProdDep {
@@ -275,10 +286,42 @@ async fn fetch_lockfile(
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err(
+            "403 — the PAT needs 'Contents: Read' permission (Administration/Metadata is not enough)"
+                .to_owned(),
+        );
+    }
     if !resp.status().is_success() {
         return Err(format!("GitHub {}", resp.status()));
     }
     resp.text().await.map(Some).map_err(|e| e.to_string())
+}
+
+/// Fetch a repo's `Cargo.lock` trying each connected PAT until one can read it — repos may live
+/// under different GitHub accounts. `Ok(None)` if no token finds it (absent or inaccessible);
+/// `Err` only if every token errored without a definitive 404.
+async fn fetch_lockfile_any(
+    client: &reqwest::Client,
+    tokens: &[String],
+    full_name: &str,
+) -> Result<Option<String>, String> {
+    let mut saw_none = false;
+    let mut last_err = None;
+    for token in tokens {
+        match fetch_lockfile(client, token, full_name).await {
+            Ok(Some(text)) => return Ok(Some(text)),
+            Ok(None) => saw_none = true,
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if saw_none {
+        Ok(None)
+    } else if let Some(e) = last_err {
+        Err(e)
+    } else {
+        Ok(None)
+    }
 }
 
 /// The latest stable version of a crate on crates.io, if reachable.
@@ -357,7 +400,7 @@ pub struct DeputyService {
 
     /// A connected GitHub fine-grained PAT used to list/acquire the user's repos. Held in memory
     /// only — never written to the vault or logged.
-    github_token: std::sync::Mutex<Option<String>>,
+    github_connections: std::sync::Mutex<Vec<GhConnection>>,
 
     /// Named folders grouping downloaded repositories. In-memory for this session (persistence
     /// to the vault is a follow-up).
@@ -434,7 +477,7 @@ impl DeputyService {
             revocations: RevocationSet::new(),
             capability,
             mid_active,
-            github_token: std::sync::Mutex::new(None),
+            github_connections: std::sync::Mutex::new(Vec::new()),
             folders: std::sync::Mutex::new(HashMap::new()),
             analytics_cache: std::sync::Mutex::new(HashMap::new()),
             download_progress: std::sync::Mutex::new(None),
@@ -464,28 +507,87 @@ impl DeputyService {
         self.advisories.read().expect("advisories lock").len()
     }
 
-    /// Connect a GitHub fine-grained PAT (capability: WRITE). Stored in memory for this session.
-    pub fn connect_github(&self, token: String) -> Result<(), ApiError> {
+    /// Connect (or replace) a GitHub fine-grained PAT under a label (capability: WRITE). Multiple
+    /// accounts can be connected; each keeps its own token. Stored in memory for this session only.
+    pub fn connect_github(
+        &self,
+        label: String,
+        token: String,
+        owner: String,
+    ) -> Result<(), ApiError> {
         self.authorize_op(Ops::WRITE)?;
         if token.trim().is_empty() {
             return Err(ApiError::bad_request("empty GitHub token"));
         }
-        *self.github_token.lock().expect("github_token mutex") = Some(token);
+        let label = match label.trim() {
+            "" => "GitHub".to_owned(),
+            l => l.to_owned(),
+        };
+        let owner = owner.trim().to_owned();
+        let mut conns = self
+            .github_connections
+            .lock()
+            .expect("github connections mutex");
+        // Replace the token/owner if this label is already connected; otherwise add a new account.
+        match conns.iter_mut().find(|c| c.label == label) {
+            Some(existing) => {
+                existing.token = token;
+                existing.owner = owner;
+            }
+            None => conns.push(GhConnection {
+                label,
+                token,
+                owner,
+            }),
+        }
         Ok(())
     }
 
-    /// The connected GitHub PAT (capability: READ), or a 400 if none is connected yet.
-    pub(crate) fn github_token(&self) -> Result<String, ApiError> {
-        self.authorize_op(Ops::READ)?;
-        self.github_token
+    /// Remove a connected GitHub account by label (capability: WRITE). No-op if absent.
+    pub fn disconnect_github(&self, label: &str) -> Result<(), ApiError> {
+        self.authorize_op(Ops::WRITE)?;
+        self.github_connections
             .lock()
-            .expect("github_token mutex")
-            .clone()
-            .ok_or_else(|| {
-                ApiError::bad_request(
-                    "GitHub not connected — POST a token to /github/connect first",
-                )
-            })
+            .expect("github connections mutex")
+            .retain(|c| c.label != label);
+        Ok(())
+    }
+
+    /// The labels of all connected GitHub accounts (capability: READ) — never the tokens.
+    pub fn github_connection_labels(&self) -> Result<Vec<String>, ApiError> {
+        self.authorize_op(Ops::READ)?;
+        Ok(self
+            .github_connections
+            .lock()
+            .expect("github connections mutex")
+            .iter()
+            .map(|c| c.label.clone())
+            .collect())
+    }
+
+    /// All connected accounts (label + token) (capability: READ), or a 400 if none are connected.
+    pub(crate) fn github_connections(&self) -> Result<Vec<GhConnection>, ApiError> {
+        self.authorize_op(Ops::READ)?;
+        let conns = self
+            .github_connections
+            .lock()
+            .expect("github connections mutex")
+            .clone();
+        if conns.is_empty() {
+            return Err(ApiError::bad_request(
+                "GitHub not connected — add an account on the GitHub tab first",
+            ));
+        }
+        Ok(conns)
+    }
+
+    /// The tokens of all connected accounts (capability: READ), for trying lockfile fetches.
+    pub(crate) fn github_tokens(&self) -> Result<Vec<String>, ApiError> {
+        Ok(self
+            .github_connections()?
+            .into_iter()
+            .map(|c| c.token)
+            .collect())
     }
 
     /// Download + analyze the selected repos' lockfiles and allocate them to `folder`
@@ -497,7 +599,7 @@ impl DeputyService {
         repos: Vec<String>,
     ) -> Result<FolderSummary, ApiError> {
         self.authorize_op(Ops::WRITE)?;
-        let token = self.github_token()?;
+        let tokens = self.github_tokens()?;
         let client = reqwest::Client::new();
 
         // Pre-pass: fetch each lockfile and parse its pins (the full transitive tree per repo).
@@ -509,7 +611,7 @@ impl DeputyService {
         }
         let mut staged = Vec::with_capacity(repos.len());
         for repo in repos {
-            match fetch_lockfile(&client, &token, &repo).await {
+            match fetch_lockfile_any(&client, &tokens, &repo).await {
                 Ok(Some(text)) => {
                     let pins = parse_pins(&text).unwrap_or_default();
                     staged.push(Staged {
@@ -648,7 +750,7 @@ impl DeputyService {
         {
             return Ok(cached);
         }
-        let token = self.github_token()?;
+        let tokens = self.github_tokens()?;
         let repo_names: Vec<String> = {
             let folders = self.folders.lock().expect("folders mutex");
             match folders.get(&name) {
@@ -662,7 +764,7 @@ impl DeputyService {
         let client = reqwest::Client::new();
         let mut unique: std::collections::BTreeMap<(String, String), Pin> = Default::default();
         for repo in repo_names {
-            if let Ok(Some(text)) = fetch_lockfile(&client, &token, &repo).await {
+            if let Ok(Some(text)) = fetch_lockfile_any(&client, &tokens, &repo).await {
                 if let Ok(pins) = parse_pins(&text) {
                     for p in pins {
                         let key = (
@@ -704,7 +806,7 @@ impl DeputyService {
     async fn folder_unique_pins(
         &self,
         name: &str,
-        token: &str,
+        tokens: &[String],
         client: &reqwest::Client,
     ) -> Result<Vec<Pin>, ApiError> {
         let repo_names: Vec<String> = {
@@ -716,7 +818,7 @@ impl DeputyService {
         };
         let mut unique: std::collections::BTreeMap<(String, String), Pin> = Default::default();
         for repo in repo_names {
-            if let Ok(Some(text)) = fetch_lockfile(client, token, &repo).await {
+            if let Ok(Some(text)) = fetch_lockfile_any(client, tokens, &repo).await {
                 if let Ok(pins) = parse_pins(&text) {
                     for p in pins {
                         let key = (
@@ -735,9 +837,9 @@ impl DeputyService {
     /// fetch the latest crates.io version and surface advisories on the pinned version.
     pub async fn folder_heartbeat(&self, name: String) -> Result<HeartbeatReport, ApiError> {
         self.authorize_op(Ops::READ)?;
-        let token = self.github_token()?;
+        let tokens = self.github_tokens()?;
         let client = reqwest::Client::new();
-        let pins = self.folder_unique_pins(&name, &token, &client).await?;
+        let pins = self.folder_unique_pins(&name, &tokens, &client).await?;
 
         let mut entries = Vec::with_capacity(pins.len());
         for pin in pins {
@@ -781,9 +883,9 @@ impl DeputyService {
     /// already be in production (capability: WRITE).
     pub async fn scan_new_versions(&self, name: String) -> Result<NewVersionReport, ApiError> {
         self.authorize_op(Ops::WRITE)?;
-        let token = self.github_token()?;
+        let tokens = self.github_tokens()?;
         let client = reqwest::Client::new();
-        let pins = self.folder_unique_pins(&name, &token, &client).await?;
+        let pins = self.folder_unique_pins(&name, &tokens, &client).await?;
 
         // Which deps have a newer published version (with its checksum, so we can stage it)?
         let mut updates: Vec<(String, String, String, String)> = Vec::new();
@@ -853,9 +955,9 @@ impl DeputyService {
         hold: Vec<(String, String)>,
     ) -> Result<usize, ApiError> {
         self.authorize_op(Ops::WRITE)?;
-        let token = self.github_token()?;
+        let tokens = self.github_tokens()?;
         let client = reqwest::Client::new();
-        let pins = self.folder_unique_pins(&name, &token, &client).await?;
+        let pins = self.folder_unique_pins(&name, &tokens, &client).await?;
         let hold: HashSet<(String, String)> = hold.into_iter().collect();
         let did = self.session.did.clone();
         // Promote every clean, acquired dependency that the caller did NOT hold back in staging.
@@ -903,7 +1005,7 @@ impl DeputyService {
     /// integrity is skipped for not-yet-acquired deps and noted as such).
     pub async fn scan_folder(&self, name: String) -> Result<FolderScanReport, ApiError> {
         self.authorize_op(Ops::WRITE)?;
-        let token = self.github_token()?;
+        let tokens = self.github_tokens()?;
 
         let repo_names: Vec<String> = {
             let folders = self.folders.lock().expect("folders mutex");
@@ -916,7 +1018,7 @@ impl DeputyService {
         let client = reqwest::Client::new();
         let mut repos = Vec::with_capacity(repo_names.len());
         for full_name in repo_names {
-            repos.push(self.scan_repo(&client, &token, full_name).await);
+            repos.push(self.scan_repo(&client, &tokens, full_name).await);
         }
         Ok(FolderScanReport { name, repos })
     }
@@ -924,10 +1026,10 @@ impl DeputyService {
     async fn scan_repo(
         &self,
         client: &reqwest::Client,
-        token: &str,
+        tokens: &[String],
         full_name: String,
     ) -> RepoScanResult {
-        let text = match fetch_lockfile(client, token, &full_name).await {
+        let text = match fetch_lockfile_any(client, tokens, &full_name).await {
             Ok(Some(t)) => t,
             Ok(None) => {
                 return RepoScanResult {

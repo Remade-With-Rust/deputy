@@ -33,6 +33,10 @@ struct Repo {
     private: bool,
     #[serde(default)]
     language: Option<String>,
+    #[serde(default)]
+    fork: bool,
+    #[serde(default)]
+    connection: String,
 }
 
 /// The result of downloading + acquiring one repo into a folder.
@@ -360,36 +364,156 @@ fn NavItem(tab: Signal<Tab>, this: Tab, label: String) -> Element {
 #[component]
 fn GitHubTab() -> Element {
     let mut token = use_signal(String::new);
+    let mut label = use_signal(String::new);
+    let mut owner = use_signal(String::new);
+    let mut hide_forks = use_signal(|| true);
+    let mut connections = use_signal(Vec::<String>::new);
     let mut repos = use_signal(|| None::<Result<Vec<Repo>, String>>);
     let mut connecting = use_signal(|| false);
+    let mut connect_err = use_signal(|| None::<String>);
     let mut selected = use_signal(HashSet::<String>::new);
     let mut folder = use_signal(|| "MATA Infra".to_string());
     let mut downloading = use_signal(|| false);
     let mut progress = use_signal(|| None::<ProgressView>);
     let mut result = use_signal(|| None::<Result<FolderSummary, String>>);
 
-    // If the server already holds a PAT (from earlier in the session), restore the repo list.
+    // Restore the connected accounts + their repos from the server (set earlier this session).
     use_effect(move || {
         spawn(async move {
-            if let Ok(list) = get_json::<Vec<Repo>>("/github/repos").await {
-                repos.set(Some(Ok(list)));
+            if let Ok(labels) = get_json::<Vec<String>>("/github/connections").await {
+                let has = !labels.is_empty();
+                connections.set(labels);
+                if has {
+                    if let Ok(list) = get_json::<Vec<Repo>>("/github/repos").await {
+                        repos.set(Some(Ok(list)));
+                    }
+                }
             }
         });
     });
 
     let snapshot = repos.read().clone();
+    let fork_count = match &snapshot {
+        Some(Ok(list)) => list.iter().filter(|r| r.fork).count(),
+        _ => 0,
+    };
     rsx! {
         section { class: "panel",
             div { class: "panel-head", h2 { "GitHub" } }
+
+            // Connected accounts — each PAT keeps its own token; repos are listed together.
+            div { class: "gh-accounts",
+                {if connections.read().is_empty() {
+                    rsx! { span { class: "muted", "No accounts connected yet." } }
+                } else {
+                    rsx! {
+                        for acct in connections.read().iter() {
+                            span { class: "acct-chip",
+                                "{acct}"
+                                button {
+                                    class: "acct-x",
+                                    title: "disconnect",
+                                    onclick: {
+                                        let acct = acct.clone();
+                                        move |_| {
+                                            let body = serde_json::json!({ "label": acct.clone() });
+                                            spawn(async move {
+                                                let _ = post_json::<serde_json::Value>("/github/disconnect", &body).await;
+                                                let labels = get_json::<Vec<String>>("/github/connections").await.unwrap_or_default();
+                                                let empty = labels.is_empty();
+                                                connections.set(labels);
+                                                let list = if empty { Ok(vec![]) } else { get_json::<Vec<Repo>>("/github/repos").await };
+                                                repos.set(Some(list));
+                                                selected.write().clear();
+                                            });
+                                        }
+                                    },
+                                    "×"
+                                }
+                            }
+                        }
+                    }
+                }}
+            }
+            div { class: "gh-connect",
+                input {
+                    class: "acct-label",
+                    value: "{label}",
+                    oninput: move |e| label.set(e.value()),
+                    placeholder: "label (optional)",
+                }
+                input {
+                    class: "acct-label",
+                    value: "{owner}",
+                    oninput: move |e| owner.set(e.value()),
+                    placeholder: "org / user to list (e.g. Remade-With-Rust)",
+                }
+                input {
+                    r#type: "password",
+                    value: "{token}",
+                    oninput: move |e| token.set(e.value()),
+                    placeholder: "fine-grained GitHub PAT",
+                }
+                button {
+                    class: "gh",
+                    disabled: connecting() || token().trim().is_empty(),
+                    onclick: move |_| {
+                        let body = serde_json::json!({ "token": token(), "label": label(), "owner": owner() });
+                        connecting.set(true);
+                        connect_err.set(None);
+                        spawn(async move {
+                            match post_json::<serde_json::Value>("/github/connect", &body).await {
+                                Ok(_) => {
+                                    token.set(String::new());
+                                    label.set(String::new());
+                                    owner.set(String::new());
+                                    if let Ok(labels) = get_json::<Vec<String>>("/github/connections").await {
+                                        connections.set(labels);
+                                    }
+                                    repos.set(Some(get_json::<Vec<Repo>>("/github/repos").await));
+                                }
+                                Err(e) => connect_err.set(Some(e)),
+                            }
+                            connecting.set(false);
+                        });
+                    },
+                    {if connecting() { "Connecting…" } else { "Add account" }}
+                }
+            }
+            {match connect_err() {
+                Some(e) => rsx! { p { class: "err", "Couldn't connect — {e}" } },
+                None => rsx! {},
+            }}
+            p { class: "muted gh-hint",
+                "Add one or more fine-grained PATs (read access to your repos). Each is held in "
+                "memory for this session only; repositories from every account are listed together."
+            }
+
             {match snapshot {
-                Some(Ok(list)) => rsx! {
-                    p { class: "muted", "{list.len()} repositories — select which to download." }
+                Some(Ok(list)) if !list.is_empty() => rsx! {
+                    div { class: "repolist-head",
+                        p { class: "muted", "{list.len()} repositories — select which to download." }
+                        {if fork_count > 0 {
+                            rsx! {
+                                label { class: "fork-toggle",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: hide_forks(),
+                                        onclick: move |_| { let v = hide_forks(); hide_forks.set(!v); },
+                                    }
+                                    " hide {fork_count} forks"
+                                }
+                            }
+                        } else { rsx! {} }}
+                    }
                     ul { class: "repolist",
-                        for r in list.iter() {
+                        for r in list.iter().filter(|r| !hide_forks() || !r.fork) {
                             li { class: "repo-row",
                                 div { class: "repo-info",
                                     span { class: "repo-name", "{r.full_name}" }
                                     {if r.private { rsx! { span { class: "badge", "private" } } } else { rsx! {} }}
+                                    {if r.fork { rsx! { span { class: "badge fork", "fork" } } } else { rsx! {} }}
+                                    {if !r.connection.is_empty() { rsx! { span { class: "acct-tag", "{r.connection}" } } } else { rsx! {} }}
                                     {match &r.language {
                                         Some(lang) => rsx! { span { class: "lang-tag", "{lang}" } },
                                         None => rsx! {},
@@ -470,41 +594,15 @@ fn GitHubTab() -> Element {
                         None => rsx! {},
                     }}
                 },
-                other => rsx! {
-                    div { class: "gh-connect",
-                        input {
-                            r#type: "password",
-                            value: "{token}",
-                            oninput: move |e| token.set(e.value()),
-                            placeholder: "fine-grained GitHub PAT (read access to your repos)",
-                        }
-                        button {
-                            class: "gh",
-                            disabled: connecting(),
-                            onclick: move |_| {
-                                let body = serde_json::json!({ "token": token() });
-                                connecting.set(true);
-                                spawn(async move {
-                                    let r = match post_json::<serde_json::Value>("/github/connect", &body).await {
-                                        Ok(_) => get_json::<Vec<Repo>>("/github/repos").await,
-                                        Err(e) => Err(e),
-                                    };
-                                    repos.set(Some(r));
-                                    connecting.set(false);
-                                });
-                            },
-                            {if connecting() { "Connecting…" } else { "Connect GitHub" }}
-                        }
-                    }
-                    {match other {
-                        Some(Err(e)) => rsx! { p { class: "err", "Couldn't connect — {e}" } },
-                        _ => rsx! {},
-                    }}
-                    p { class: "muted gh-hint",
-                        "Paste a fine-grained personal access token with read access to your "
-                        "repositories. It's held in memory for this session only."
+                Some(Ok(_)) => rsx! {
+                    p { class: "muted",
+                        "No repositories listed. If this is an organization-scoped PAT, put the org "
+                        "name (e.g. Remade-With-Rust) in the “org / user to list” field above — an "
+                        "org token can't be enumerated through GitHub's /user/repos."
                     }
                 },
+                Some(Err(e)) => rsx! { p { class: "err", "Couldn't load repositories — {e}" } },
+                None => rsx! {},
             }}
         }
     }
@@ -1394,4 +1492,13 @@ th { color: #9aa0aa; font-weight: 500; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .hash { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
 .prod-push-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 14px 0 6px; }
+.gh-accounts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.acct-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 6px 3px 10px; border-radius: 999px; background: #1e293b; border: 1px solid #334155; font-size: 13px; }
+.acct-x { background: transparent; border: none; color: #94a3b8; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
+.acct-x:hover { color: #f87171; }
+.acct-label { max-width: 200px; }
+.acct-tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #0b3b2e; color: #6ee7b7; border: 1px solid #155e47; }
+.badge.fork { background: #3b2f0b; color: #fcd34d; border: 1px solid #5e4a15; }
+.repolist-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.fork-toggle { font-size: 13px; color: #94a3b8; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
 ";

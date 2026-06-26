@@ -35,6 +35,17 @@ struct DeployRequest {
 #[derive(Deserialize)]
 struct GitHubConnect {
     token: String,
+    /// Human label for this account (e.g. "Work"). Defaults to the GitHub login if empty.
+    #[serde(default)]
+    label: String,
+    /// Optional org/user to scope the repo listing to. Empty = the token user's affiliations.
+    #[serde(default)]
+    owner: String,
+}
+
+#[derive(Deserialize)]
+struct GitHubDisconnect {
+    label: String,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +92,11 @@ struct Repo {
     private: bool,
     #[serde(default)]
     language: Option<String>,
+    #[serde(default)]
+    fork: bool,
+    /// Which connected account this repo came from (filled in by `github_repos`).
+    #[serde(default)]
+    connection: String,
 }
 
 /// Build the API router. Every handler shares one unlocked [`DeputyService`].
@@ -100,6 +116,8 @@ pub fn router(service: Arc<DeputyService>) -> Router {
         .route("/gate", post(gate))
         .route("/deploy", post(deploy))
         .route("/github/connect", post(github_connect))
+        .route("/github/disconnect", post(github_disconnect))
+        .route("/github/connections", get(github_connections))
         .route("/github/repos", get(github_repos))
         .route("/github/download", post(github_download))
         .route("/github/download/progress", get(download_progress))
@@ -184,19 +202,11 @@ async fn deploy(
     Ok(Json(svc.deploy(&req.source, &req.into)?))
 }
 
-async fn github_connect(
-    State(svc): AppState,
-    Json(req): Json<GitHubConnect>,
-) -> Result<Json<Value>, ApiError> {
-    svc.connect_github(req.token)?;
-    Ok(Json(json!({ "connected": true })))
-}
-
-async fn github_repos(State(svc): AppState) -> Result<Json<Vec<Repo>>, ApiError> {
-    let token = svc.github_token()?;
+/// Fetch the login for a PAT — both validates the token and gives us a default account label.
+async fn github_login(token: &str) -> Result<String, ApiError> {
     let resp = reqwest::Client::new()
-        .get("https://api.github.com/user/repos?per_page=100&sort=updated")
-        .bearer_auth(&token)
+        .get("https://api.github.com/user")
+        .bearer_auth(token)
         .header("User-Agent", "deputy")
         .header("Accept", "application/vnd.github+json")
         .send()
@@ -209,16 +219,116 @@ async fn github_repos(State(svc): AppState) -> Result<Json<Vec<Repo>>, ApiError>
         })?;
     if !resp.status().is_success() {
         return Err(ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            format!("GitHub API returned {}", resp.status()),
+            StatusCode::BAD_REQUEST,
+            format!("GitHub rejected the token ({})", resp.status()),
         ));
     }
-    resp.json::<Vec<Repo>>().await.map(Json).map_err(|e| {
-        ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            format!("GitHub response parse failed: {e}"),
-        )
-    })
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, format!("GitHub parse failed: {e}")))?;
+    Ok(body
+        .get("login")
+        .and_then(|l| l.as_str())
+        .unwrap_or("GitHub")
+        .to_owned())
+}
+
+async fn github_connect(
+    State(svc): AppState,
+    Json(req): Json<GitHubConnect>,
+) -> Result<Json<Value>, ApiError> {
+    // Validate the PAT up front and use its login as the label when none was given.
+    let login = github_login(&req.token).await?;
+    // Label preference: explicit label > owner (so org repos read as the org) > login.
+    let label = match (req.label.trim(), req.owner.trim()) {
+        (l, _) if !l.is_empty() => l.to_owned(),
+        (_, o) if !o.is_empty() => o.to_owned(),
+        _ => login.clone(),
+    };
+    svc.connect_github(label.clone(), req.token, req.owner)?;
+    Ok(Json(
+        json!({ "connected": true, "label": label, "login": login }),
+    ))
+}
+
+async fn github_disconnect(
+    State(svc): AppState,
+    Json(req): Json<GitHubDisconnect>,
+) -> Result<Json<Value>, ApiError> {
+    svc.disconnect_github(&req.label)?;
+    Ok(Json(json!({ "disconnected": true })))
+}
+
+async fn github_connections(State(svc): AppState) -> Result<Json<Vec<String>>, ApiError> {
+    Ok(Json(svc.github_connection_labels()?))
+}
+
+/// Fetch + parse one repo-listing page. `None` on any failure, so callers can fall back or skip.
+async fn fetch_repos(client: &reqwest::Client, token: &str, url: &str) -> Option<Vec<Repo>> {
+    let resp = client
+        .get(url)
+        .bearer_auth(token)
+        .header("User-Agent", "deputy")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<Vec<Repo>>().await.ok()
+}
+
+/// Repos across every connected account, each tagged with its account label.
+///
+/// When a connection sets an `owner`, the listing is scoped to that org's repos
+/// (`GET /orgs/{owner}/repos`) — or, if `owner` isn't an org, the token user's own repos. This
+/// avoids GitHub's `/user/repos`, which lists by the *user's* affiliations and so returns the same
+/// cross-org firehose for every token the same person created. One account's failure (e.g. an
+/// expired token) is skipped rather than blocking the whole list.
+async fn github_repos(State(svc): AppState) -> Result<Json<Vec<Repo>>, ApiError> {
+    let conns = svc.github_connections()?;
+    let client = reqwest::Client::new();
+    let mut all: Vec<Repo> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for conn in conns {
+        let repos = if conn.owner.is_empty() {
+            fetch_repos(
+                &client,
+                &conn.token,
+                "https://api.github.com/user/repos?per_page=100&sort=updated",
+            )
+            .await
+        } else {
+            // Try the owner as an org; if it isn't one (404), fall back to the token user's repos.
+            let org_url = format!(
+                "https://api.github.com/orgs/{}/repos?per_page=100&type=all",
+                conn.owner
+            );
+            match fetch_repos(&client, &conn.token, &org_url).await {
+                Some(repos) => Some(repos),
+                None => {
+                    fetch_repos(
+                        &client,
+                        &conn.token,
+                        "https://api.github.com/user/repos?per_page=100&affiliation=owner",
+                    )
+                    .await
+                }
+            }
+        };
+        let Some(repos) = repos else {
+            continue;
+        };
+        for mut r in repos {
+            if seen.insert(r.full_name.clone()) {
+                r.connection = conn.label.clone();
+                all.push(r);
+            }
+        }
+    }
+    Ok(Json(all))
 }
 
 async fn github_download(

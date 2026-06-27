@@ -7,7 +7,7 @@ use deputy_analyze::{analyze, inspect, AnalysisReport};
 use deputy_core::{ContentHash, DepEcosystem, Pin, ScanVerdict, SourceId, StoreKind};
 use deputy_deploy::{gate, materialize, promote, GateDecision, MaterializePlan, Promotion};
 use deputy_ecosystem::{parse_pins, CargoEcosystem};
-use deputy_id::Session;
+use deputy_id::{Authenticator, Session, VerifyParams};
 use deputy_scan::{scan, AdvisoryDb, ScanReport};
 use deputy_store::Vault;
 use spacedb_access::{
@@ -127,6 +127,27 @@ pub struct NewVersionReport {
     pub entries: Vec<NewVersionEntry>,
 }
 
+/// A dependency that is NOT safely held in the offline vault, and why.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CoverageGap {
+    pub name: String,
+    pub version: String,
+    /// `not acquired` (crates.io but missing/failed), `git dependency`, or `other registry`.
+    pub reason: String,
+}
+
+/// Offline-archive coverage for a folder: how much of its dependency *source* is actually stored.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CoverageReport {
+    pub name: String,
+    /// crates.io deps that CAN be archived (unique name@version across the folder's lockfiles).
+    pub registry_total: usize,
+    /// Of those, how many are sealed in the vault right now.
+    pub archived: usize,
+    /// Everything not covered: missing crates.io deps + git/path/other-registry deps.
+    pub gaps: Vec<CoverageGap>,
+}
+
 /// Aggregate line counts for one language across a folder's dependency crates.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LangStat {
@@ -153,6 +174,9 @@ pub struct DepLang {
     pub links_native: Option<String>,
     /// Lines written in memory-unsafe native languages (C / C++ / asm).
     pub native_unsafe_lines: usize,
+    /// True if this exact `name@version` is already promoted to the production store; false means
+    /// it's still in staging (the dirty store).
+    pub in_production: bool,
 }
 
 /// Dependency-language + security analytics for a folder.
@@ -193,6 +217,12 @@ fn compute_dep_analytics(vault: &Vault, pins: Vec<Pin>) -> AnalyticsBody {
     for pin in &pins {
         let name = pin.dep.name.as_str().to_owned();
         let version = pin.dep.version.as_str().to_owned();
+        // Which area is this dep in — production (promoted) or staging (dirty only)?
+        let in_production = vault
+            .crate_hash(StoreKind::Prod, &name, &version)
+            .ok()
+            .flatten()
+            .is_some();
         // Prefer the already-acquired crate from the vault; only download what isn't staged.
         let bytes = vault
             .get_artifact(StoreKind::Dirty, &pin.expected)
@@ -232,6 +262,7 @@ fn compute_dep_analytics(vault: &Vault, pins: Vec<Pin>) -> AnalyticsBody {
                     unsafe_occurrences: facts.unsafe_occurrences,
                     links_native: facts.links_native.clone(),
                     native_unsafe_lines,
+                    in_production,
                 });
             }
             None => deps.push(DepLang {
@@ -244,6 +275,7 @@ fn compute_dep_analytics(vault: &Vault, pins: Vec<Pin>) -> AnalyticsBody {
                 unsafe_occurrences: 0,
                 links_native: None,
                 native_unsafe_lines: 0,
+                in_production,
             }),
         }
     }
@@ -324,6 +356,28 @@ async fn fetch_lockfile_any(
     }
 }
 
+/// Minimal `Cargo.lock` view used by the coverage check — we need *every* package, including the
+/// git/path ones [`parse_pins`] deliberately drops.
+#[derive(Deserialize)]
+struct RawLock {
+    #[serde(default)]
+    package: Vec<RawPkg>,
+}
+
+#[derive(Deserialize)]
+struct RawPkg {
+    name: String,
+    version: String,
+    source: Option<String>,
+    checksum: Option<String>,
+}
+
+/// Both the git index and the sparse index identify crates.io — the only source we can archive.
+fn is_cratesio(source: &str) -> bool {
+    source.starts_with("registry+https://github.com/rust-lang/crates.io-index")
+        || source.starts_with("sparse+https://index.crates.io/")
+}
+
 /// The latest stable version of a crate on crates.io, if reachable.
 async fn crates_io_latest(client: &reqwest::Client, name: &str) -> Option<String> {
     let resp = client
@@ -384,7 +438,10 @@ async fn crates_io_latest_versioned(
 /// human or an AI agent.
 pub struct DeputyService {
     vault: Vault,
-    session: Session,
+    /// The acting principal. Swappable at runtime: a browser mID sign-in ([`Self::sign_in`])
+    /// replaces it with the verified wallet identity. The capability layer below gates ops
+    /// independently; this is who the principal *is* (DID shown, used in promotion receipts).
+    session: std::sync::Mutex<Session>,
     ecosystem: CargoEcosystem,
     advisories: std::sync::RwLock<AdvisoryDb>,
 
@@ -394,9 +451,14 @@ pub struct DeputyService {
     revocations: RevocationSet,
     capability: SignedCapability,
 
+    /// RP-side sign-in: issues single-use nonces and verifies wallet tokens (`deputy-id`).
+    authenticator: Authenticator,
+    /// The bare origin a wallet token's `aud` must equal — what the challenge advertises.
+    mid_audience: String,
+
     /// Whether a verified mID session authorized this service. `false` when opened in local mode
     /// ([`Self::open_local`]) — capabilities still gate ops, but the owner is a local identity.
-    mid_active: bool,
+    mid_active: std::sync::atomic::AtomicBool,
 
     /// A connected GitHub fine-grained PAT used to list/acquire the user's repos. Held in memory
     /// only — never written to the vault or logged.
@@ -467,16 +529,23 @@ impl DeputyService {
         )?;
         let capability = SignedCapability::sign(cap, &owner)?;
 
+        let mid_audience = std::env::var("DEPUTY_MID_AUDIENCE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "http://localhost:8080".to_owned());
+
         Ok(Self {
             vault,
-            session,
+            session: std::sync::Mutex::new(session),
             ecosystem: CargoEcosystem::new(),
             advisories: std::sync::RwLock::new(AdvisoryDb::new()),
             owner,
             directory,
             revocations: RevocationSet::new(),
             capability,
-            mid_active,
+            authenticator: Authenticator::in_memory(),
+            mid_audience,
+            mid_active: std::sync::atomic::AtomicBool::new(mid_active),
             github_connections: std::sync::Mutex::new(Vec::new()),
             folders: std::sync::Mutex::new(HashMap::new()),
             analytics_cache: std::sync::Mutex::new(HashMap::new()),
@@ -947,6 +1016,92 @@ impl DeputyService {
         Ok(NewVersionReport { name, entries })
     }
 
+    /// Offline-archive coverage for a folder (capability: READ): walk every repo's `Cargo.lock`,
+    /// classify each dependency, and report which ones are safely sealed in the vault vs. which are
+    /// gaps — missing crates.io deps (failed/never acquired), git deps, or other registries that
+    /// Deputy can't content-verify. Path/workspace members (your own code) are ignored.
+    pub async fn folder_coverage(&self, name: String) -> Result<CoverageReport, ApiError> {
+        self.authorize_op(Ops::READ)?;
+        let tokens = self.github_tokens()?;
+        let client = reqwest::Client::new();
+        let repo_names: Vec<String> = {
+            let folders = self.folders.lock().expect("folders mutex");
+            match folders.get(&name) {
+                Some(f) => f.repos.iter().map(|r| r.full_name.clone()).collect(),
+                None => return Err(ApiError::bad_request(format!("no such folder: {name}"))),
+            }
+        };
+
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut registry_total = 0usize;
+        let mut archived = 0usize;
+        let mut gaps: Vec<CoverageGap> = Vec::new();
+
+        for repo in repo_names {
+            let Ok(Some(text)) = fetch_lockfile_any(&client, &tokens, &repo).await else {
+                continue;
+            };
+            let Ok(lock) = toml::from_str::<RawLock>(&text) else {
+                continue;
+            };
+            for pkg in lock.package {
+                if !seen.insert((pkg.name.clone(), pkg.version.clone())) {
+                    continue;
+                }
+                // No source = workspace/path member (your own code), not a dependency to archive.
+                let Some(source) = pkg.source.as_deref() else {
+                    continue;
+                };
+                if source.starts_with("git+") {
+                    gaps.push(CoverageGap {
+                        name: pkg.name,
+                        version: pkg.version,
+                        reason: "git dependency".to_owned(),
+                    });
+                } else if is_cratesio(source) {
+                    registry_total += 1;
+                    let staged = pkg
+                        .checksum
+                        .as_deref()
+                        .and_then(|c| ContentHash::from_sha256_hex(c).ok())
+                        .map(|h| {
+                            self.vault
+                                .has_artifact(StoreKind::Dirty, &h)
+                                .unwrap_or(false)
+                                || self
+                                    .vault
+                                    .has_artifact(StoreKind::Prod, &h)
+                                    .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+                    if staged {
+                        archived += 1;
+                    } else {
+                        gaps.push(CoverageGap {
+                            name: pkg.name,
+                            version: pkg.version,
+                            reason: "not acquired".to_owned(),
+                        });
+                    }
+                } else {
+                    gaps.push(CoverageGap {
+                        name: pkg.name,
+                        version: pkg.version,
+                        reason: "other registry".to_owned(),
+                    });
+                }
+            }
+        }
+        // Surface the actionable gaps first (not acquired), then the structural ones.
+        gaps.sort_by(|a, b| a.reason.cmp(&b.reason).then(a.name.cmp(&b.name)));
+        Ok(CoverageReport {
+            name,
+            registry_total,
+            archived,
+            gaps,
+        })
+    }
+
     /// Promote a folder's scanned-clean, acquired dependencies into the production store
     /// (capability: WRITE), each with a hash-chained receipt. Returns the count promoted.
     pub async fn promote_folder(
@@ -959,7 +1114,7 @@ impl DeputyService {
         let client = reqwest::Client::new();
         let pins = self.folder_unique_pins(&name, &tokens, &client).await?;
         let hold: HashSet<(String, String)> = hold.into_iter().collect();
-        let did = self.session.did.clone();
+        let did = self.session().did;
         // Promote every clean, acquired dependency that the caller did NOT hold back in staging.
         let promoted = pins
             .iter()
@@ -1091,13 +1246,40 @@ impl DeputyService {
         }
     }
 
-    pub fn session(&self) -> &Session {
-        &self.session
+    /// A snapshot of the current acting principal.
+    pub fn session(&self) -> Session {
+        self.session.lock().expect("session mutex").clone()
     }
 
     /// Whether a verified mID session backs this service (`false` in local mode).
     pub fn mid_active(&self) -> bool {
+        self.mid_active.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Issue a single-use challenge for a browser/extension sign-in: the nonce the wallet must
+    /// embed and the audience (bare origin) its token's `aud` must equal.
+    pub fn issue_challenge(&self) -> (String, String) {
+        (self.authenticator.issue_nonce(), self.mid_audience.clone())
+    }
+
+    /// Verify a wallet token from the MATA extension and, on success, make its identity the acting
+    /// principal (flips `mid_active` on). The vault stays unlocked by the passphrase — mID
+    /// authenticates *who is driving*, not the at-rest key (`docs/AUTH.md` §1).
+    pub fn sign_in(
+        &self,
+        token: &str,
+        nonce: &str,
+        now_unix_secs: u64,
+    ) -> Result<Session, ApiError> {
+        let params = VerifyParams::new(self.mid_audience.clone(), nonce.to_owned(), now_unix_secs);
+        let session = self
+            .authenticator
+            .authenticate(token, &params)
+            .map_err(|e| ApiError::unauthorized(format!("mID sign-in failed: {e}")))?;
+        *self.session.lock().expect("session mutex") = session.clone();
         self.mid_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(session)
     }
 
     /// The vault owner's DID — the capability issuer.
@@ -1234,7 +1416,7 @@ impl DeputyService {
     /// Promote scanned-clean dependencies into prod. (capability: WRITE)
     pub fn promote(&self, source: &str) -> Result<Vec<Promotion>, ApiError> {
         self.authorize_op(Ops::WRITE)?;
-        let did = self.session.did.clone();
+        let did = self.session().did;
         let outcomes = self
             .pins(source)?
             .iter()

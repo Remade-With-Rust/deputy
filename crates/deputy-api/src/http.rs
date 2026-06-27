@@ -15,7 +15,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::error::ApiError;
 use crate::service::{
-    DepAnalytics, DeputyService, FolderScanReport, FolderSummary, HeartbeatReport,
+    CoverageReport, DepAnalytics, DeputyService, FolderScanReport, FolderSummary, HeartbeatReport,
     NewVersionReport, ProdDep,
 };
 
@@ -108,6 +108,8 @@ pub fn router(service: Arc<DeputyService>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/session", get(session))
+        .route("/auth/challenge", get(auth_challenge))
+        .route("/auth/verify", post(auth_verify))
         .route("/discover", post(discover))
         .route("/acquire", post(acquire))
         .route("/analyze", post(analyze))
@@ -125,6 +127,7 @@ pub fn router(service: Arc<DeputyService>) -> Router {
         .route("/folders/delete", post(delete_folder))
         .route("/folders/scan", post(folder_scan))
         .route("/folders/scan-new-versions", post(folder_scan_new_versions))
+        .route("/folders/coverage", post(folder_coverage))
         .route("/folders/analytics", post(folder_analytics))
         .route("/folders/heartbeat", post(folder_heartbeat))
         .route("/folders/promote", post(folder_promote))
@@ -141,6 +144,39 @@ async fn health(State(svc): AppState) -> Json<Value> {
         "did": svc.session().did,
         "mid_active": svc.mid_active(),
     }))
+}
+
+#[derive(Deserialize)]
+struct AuthVerify {
+    /// The wallet's mID token (compact JWS) as returned by the MATA extension.
+    token: String,
+    /// The nonce from the matching `/auth/challenge`, echoed back so we consume the right one.
+    nonce: String,
+}
+
+/// Issue a single-use sign-in challenge: the nonce the wallet embeds + the audience its token's
+/// `aud` must equal. The browser hands these to the MATA extension to sign.
+async fn auth_challenge(State(svc): AppState) -> Json<Value> {
+    let (nonce, audience) = svc.issue_challenge();
+    Json(json!({ "nonce": nonce, "audience": audience }))
+}
+
+/// Verify the extension's signed token and, on success, make its mID the acting principal.
+async fn auth_verify(
+    State(svc): AppState,
+    Json(req): Json<AuthVerify>,
+) -> Result<Json<Value>, ApiError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let s = svc.sign_in(&req.token, &req.nonce, now)?;
+    Ok(Json(json!({
+        "status": "ok",
+        "did": s.did,
+        "exp": s.exp,
+        "mid_active": svc.mid_active(),
+    })))
 }
 
 async fn session(State(svc): AppState) -> Json<Value> {
@@ -376,6 +412,13 @@ async fn folder_scan_new_versions(
     Json(req): Json<AnalyticsRequest>,
 ) -> Result<Json<NewVersionReport>, ApiError> {
     Ok(Json(svc.scan_new_versions(req.name).await?))
+}
+
+async fn folder_coverage(
+    State(svc): AppState,
+    Json(req): Json<AnalyticsRequest>,
+) -> Result<Json<CoverageReport>, ApiError> {
+    Ok(Json(svc.folder_coverage(req.name).await?))
 }
 
 async fn folder_heartbeat(

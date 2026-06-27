@@ -26,6 +26,13 @@ struct Session {
     mid_active: bool,
 }
 
+/// A single-use sign-in challenge from `/auth/challenge`.
+#[derive(Deserialize, Clone, PartialEq)]
+struct Challenge {
+    nonce: String,
+    audience: String,
+}
+
 #[derive(Deserialize, Clone, PartialEq)]
 struct Repo {
     full_name: String,
@@ -138,6 +145,25 @@ struct NewVersionReport {
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
+struct CoverageGap {
+    name: String,
+    version: String,
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+struct CoverageReport {
+    name: String,
+    #[serde(default)]
+    registry_total: usize,
+    #[serde(default)]
+    archived: usize,
+    #[serde(default)]
+    gaps: Vec<CoverageGap>,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
 struct LangStat {
     language: String,
     lines: usize,
@@ -162,6 +188,8 @@ struct DepLang {
     links_native: Option<String>,
     #[serde(default)]
     native_unsafe_lines: usize,
+    #[serde(default)]
+    in_production: bool,
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
@@ -220,6 +248,61 @@ async fn post_json<T: for<'de> Deserialize<'de>>(
     read_json(resp).await
 }
 
+/// Ask the **MATA Sovereign ID browser extension** to sign the challenge and return a wallet
+/// token. We dispatch the request over the page `postMessage` channel (the framework-agnostic
+/// contract an injected extension content-script listens on) and await its response.
+///
+/// Contract (confirm against the shipped extension):
+///   request : `window.postMessage({ type: "mata-sovereign-id:request", audience, nonce }, origin)`
+///   response: `window.postMessage({ type: "mata-sovereign-id:response", token | error }, origin)`
+async fn request_mid_token(audience: &str, nonce: &str) -> Result<String, String> {
+    // JSON-encode so the values land in the script as safely-quoted string literals.
+    let aud = serde_json::to_string(audience).unwrap_or_else(|_| "\"\"".to_owned());
+    let non = serde_json::to_string(nonce).unwrap_or_else(|_| "\"\"".to_owned());
+    let script = format!(
+        r#"
+        const audience = {aud};
+        const nonce = {non};
+        return await new Promise((resolve) => {{
+          const REQ = "mata-sovereign-id:request";
+          const RES = "mata-sovereign-id:response";
+          let done = false;
+          function onMsg(ev) {{
+            const d = ev.data;
+            if (!d || d.type !== RES) return;
+            done = true;
+            window.removeEventListener("message", onMsg);
+            if (d.token) resolve({{ ok: true, token: d.token }});
+            else resolve({{ ok: false, error: d.error || "sign-in declined" }});
+          }}
+          window.addEventListener("message", onMsg);
+          window.postMessage({{ type: REQ, audience: audience, nonce: nonce }}, window.location.origin);
+          setTimeout(() => {{
+            if (done) return;
+            window.removeEventListener("message", onMsg);
+            resolve({{ ok: false, error: "no MATA extension responded — is it installed and unlocked?" }});
+          }}, 60000);
+        }});
+        "#
+    );
+    let value = dioxus::document::eval(&script)
+        .await
+        .map_err(|e| format!("extension bridge error: {e:?}"))?;
+    if value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        value
+            .get("token")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| "extension returned no token".to_owned())
+    } else {
+        Err(value
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("sign-in declined")
+            .to_owned())
+    }
+}
+
 // ── Root: the mID auth gate ───────────────────────────────────────────────────
 
 #[component]
@@ -255,9 +338,21 @@ fn Landing(sess: Signal<Option<Session>>) -> Element {
                         busy.set(true);
                         error.set(None);
                         spawn(async move {
-                            match get_json::<Session>("/health").await {
+                            // 1. Ask Deputy for a single-use challenge (nonce + audience).
+                            let challenge = match get_json::<Challenge>("/auth/challenge").await {
+                                Ok(c) => c,
+                                Err(e) => { error.set(Some(format!("couldn't start sign-in — {e}"))); busy.set(false); return; }
+                            };
+                            // 2. Have the MATA extension sign it and return a wallet token.
+                            let token = match request_mid_token(&challenge.audience, &challenge.nonce).await {
+                                Ok(t) => t,
+                                Err(e) => { error.set(Some(e)); busy.set(false); return; }
+                            };
+                            // 3. Verify the token with Deputy → establishes the mID session.
+                            let body = serde_json::json!({ "token": token, "nonce": challenge.nonce });
+                            match post_json::<Session>("/auth/verify", &body).await {
                                 Ok(s) => sess.set(Some(s)),
-                                Err(e) => error.set(Some(e)),
+                                Err(e) => error.set(Some(format!("verification failed — {e}"))),
                             }
                             busy.set(false);
                         });
@@ -282,9 +377,7 @@ fn Landing(sess: Signal<Option<Session>>) -> Element {
                     "⚙ Dev access — skip mID"
                 }
                 {match &*error.read() {
-                    Some(e) => rsx! {
-                        p { class: "err", "Couldn't reach the API ({e}). Is `deputy serve` running?" }
-                    },
+                    Some(e) => rsx! { p { class: "err", "{e}" } },
                     None => rsx! {},
                 }}
             }
@@ -734,6 +827,8 @@ fn ScanTab() -> Element {
     let mut loading_adv = use_signal(|| false);
     let mut nv_result = use_signal(|| None::<Result<NewVersionReport, String>>);
     let mut nv_scanning = use_signal(|| None::<String>);
+    let mut cov_result = use_signal(|| None::<Result<CoverageReport, String>>);
+    let mut cov_scanning = use_signal(|| None::<String>);
 
     use_effect(move || {
         spawn(async move {
@@ -819,6 +914,24 @@ fn ScanTab() -> Element {
                                         },
                                         {if nv_scanning() == Some(f.name.clone()) { "Checking…" } else { "Scan for updates" }}
                                     }
+                                    button {
+                                        class: "ghost",
+                                        disabled: cov_scanning().is_some(),
+                                        onclick: {
+                                            let name = f.name.clone();
+                                            move |_| {
+                                                let name = name.clone();
+                                                let body = serde_json::json!({ "name": name });
+                                                cov_scanning.set(Some(name));
+                                                cov_result.set(None);
+                                                spawn(async move {
+                                                    cov_result.set(Some(post_json::<CoverageReport>("/folders/coverage", &body).await));
+                                                    cov_scanning.set(None);
+                                                });
+                                            }
+                                        },
+                                        {if cov_scanning() == Some(f.name.clone()) { "Checking…" } else { "Check offline coverage" }}
+                                    }
                                 }
                             }
                         }
@@ -835,6 +948,11 @@ fn ScanTab() -> Element {
         {match &*nv_result.read() {
             Some(Ok(report)) => rsx! { NewVersionView { report: report.clone() } },
             Some(Err(e)) => rsx! { section { class: "panel", p { class: "err", "Update scan failed — {e}" } } },
+            None => rsx! {},
+        }}
+        {match &*cov_result.read() {
+            Some(Ok(report)) => rsx! { CoverageView { report: report.clone() } },
+            Some(Err(e)) => rsx! { section { class: "panel", p { class: "err", "Coverage check failed — {e}" } } },
             None => rsx! {},
         }}
     }
@@ -934,6 +1052,51 @@ fn NewVersionView(report: NewVersionReport) -> Element {
     }
 }
 
+#[component]
+fn CoverageView(report: CoverageReport) -> Element {
+    let complete = report.gaps.is_empty();
+    rsx! {
+        section { class: "panel result",
+            h3 { "Offline coverage — {report.name}" }
+            p { class: "muted summary",
+                "{report.archived} of {report.registry_total} crates.io dependencies are sealed in your vault"
+                {if report.gaps.is_empty() { rsx! { "." } } else { rsx! { " · {report.gaps.len()} gaps." } }}
+            }
+            {if complete {
+                rsx! {
+                    p { class: "ok",
+                        "✓ Every archivable dependency is held offline. If crates.io disappears, you can still build."
+                    }
+                }
+            } else {
+                rsx! {
+                    p { class: "muted",
+                        "These aren't in your offline archive. “not acquired” = re-download it; "
+                        "“git dependency” / “other registry” = Deputy can't content-verify it, so it's "
+                        "vendored from its own source, not crates.io."
+                    }
+                    table {
+                        tr { th { "dependency" } th { "version" } th { "gap" } }
+                        for g in report.gaps.iter() {
+                            tr {
+                                td { "{g.name}" }
+                                td { class: "muted", "{g.version}" }
+                                td {
+                                    {if g.reason == "not acquired" {
+                                        rsx! { span { class: "rb unsafe", "{g.reason}" } }
+                                    } else {
+                                        rsx! { span { class: "rb build", "{g.reason}" } }
+                                    }}
+                                }
+                            }
+                        }
+                    }
+                }
+            }}
+        }
+    }
+}
+
 // ── Dep Analytics tab: pick an infrastructure, break dependencies down by language ────────────
 
 fn pct(part: usize, total: usize) -> usize {
@@ -1020,7 +1183,7 @@ fn AnalyticsTab() -> Element {
             }}
 
             {if loading() {
-                rsx! { p { class: "muted", "Downloading + inspecting dependency crates… (first run can take a moment; results are cached)" } }
+                rsx! { p { class: "muted", "Reading staged crates from your vault and inspecting them (languages + risk). First run re-reads each repo's lockfile and inspects every crate — anything not already downloaded is fetched on demand. Cached after." } }
             } else {
                 match &*analytics.read() {
                     None => rsx! { p { class: "muted", "Pick an infrastructure to break its dependencies down by language and supply-chain risk." } },
@@ -1083,6 +1246,8 @@ fn AnalyticsView(
     let mut push_msg = use_signal(|| None::<String>);
     let folder = a.name.clone();
     let push_deps = a.deps.clone();
+    let in_prod = a.deps.iter().filter(|d| d.in_production).count();
+    let in_staging = a.deps.len().saturating_sub(in_prod);
     rsx! {
         p { class: "muted summary",
             "{a.analyzed} of {a.total_deps} crates inspected · {a.build_scripts} build scripts · "
@@ -1102,8 +1267,12 @@ fn AnalyticsView(
             }
         }
         h3 { "Dependencies ({deps.len()})" }
+        p { class: "muted summary",
+            "{in_prod} in production · {in_staging} in staging — "
+            "check anything that's NOT ready for production; the rest are redeployed."
+        }
         div { class: "prod-push-bar",
-            span { class: "muted", "Checked dependencies stay in staging — everything else clean is pushed to production." }
+            span { class: "muted", "Checked deps stay in staging. Everything else clean is flipped staging → production." }
             button {
                 class: "primary",
                 disabled: pushing(),
@@ -1120,14 +1289,14 @@ fn AnalyticsView(
                         match post_json::<serde_json::Value>("/folders/promote", &body).await {
                             Ok(v) => {
                                 let n = v.get("promoted").and_then(|x| x.as_u64()).unwrap_or(0);
-                                push_msg.set(Some(format!("✓ pushed {n} dependencies to production")));
+                                push_msg.set(Some(format!("✓ redeployed {n} dependencies to production")));
                             }
-                            Err(e) => push_msg.set(Some(format!("push failed — {e}"))),
+                            Err(e) => push_msg.set(Some(format!("redeploy failed — {e}"))),
                         }
                         pushing.set(false);
                     });
                 },
-                {if pushing() { "Pushing…" } else { "Push to Production" }}
+                {if pushing() { "Redeploying…" } else { "Redeploy to Production" }}
             }
         }
         {match push_msg() {
@@ -1135,7 +1304,7 @@ fn AnalyticsView(
             None => rsx! {},
         }}
         table {
-            tr { th { "" } th { "crate" } th { "languages" } th { "risk" } th { class: "num", "lines" } }
+            tr { th { "" } th { "crate" } th { "area" } th { "languages" } th { "risk" } th { class: "num", "lines" } }
             for d in deps.iter() {
                 DepRow { d: d.clone(), held }
             }
@@ -1173,6 +1342,13 @@ fn DepRow(d: DepLang, held: Signal<HashSet<String>>) -> Element {
                 }
             }
             td { "{d.name} {d.version}" }
+            td {
+                {if d.in_production {
+                    rsx! { span { class: "area-tag prod", "production" } }
+                } else {
+                    rsx! { span { class: "area-tag staging", "staging" } }
+                }}
+            }
             td { class: "muted", "{langs}" }
             td { class: "risk-badges",
                 {if d.has_build_script { rsx! { span { class: "rb build", "build" } } } else { rsx! {} }}
@@ -1501,4 +1677,7 @@ th { color: #9aa0aa; font-weight: 500; }
 .badge.fork { background: #3b2f0b; color: #fcd34d; border: 1px solid #5e4a15; }
 .repolist-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .fork-toggle { font-size: 13px; color: #94a3b8; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+.area-tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.area-tag.prod { background: #0b3b2e; color: #6ee7b7; border: 1px solid #155e47; }
+.area-tag.staging { background: #2a2f3a; color: #94a3b8; border: 1px solid #3a4150; }
 ";

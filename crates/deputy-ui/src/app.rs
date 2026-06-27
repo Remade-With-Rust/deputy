@@ -249,39 +249,59 @@ async fn post_json<T: for<'de> Deserialize<'de>>(
 }
 
 /// Ask the **MATA Sovereign ID browser extension** to sign the challenge and return a wallet
-/// token. We dispatch the request over the page `postMessage` channel (the framework-agnostic
-/// contract an injected extension content-script listens on) and await its response.
+/// token, speaking the exact wire protocol of `@matanetwork/sovereign-id` (ADR 0005, v1):
 ///
-/// Contract (confirm against the shipped extension):
-///   request : `window.postMessage({ type: "mata-sovereign-id:request", audience, nonce }, origin)`
-///   response: `window.postMessage({ type: "mata-sovereign-id:response", token | error }, origin)`
-async fn request_mid_token(audience: &str, nonce: &str) -> Result<String, String> {
+/// - detect: `window.__mata_mid__` is an object with `.version === 1`
+/// - request: `postMessage({ __mata_mid_v1: true, kind: "sign_in_request", request_id, rp_origin,
+///   nonce, claims }, "*")`
+/// - response: `{ __mata_mid_v1: true, kind: "sign_in_response", request_id, result }` where
+///   `result.outcome` is `"ok"` (carrying `result.jwt`), `"denied"`, or `"error"`.
+///
+/// `rp_origin` is the audience Deputy will verify the token's `aud` against (so the wallet binds
+/// the token to this relying party). It must equal Deputy's served origin (`DEPUTY_MID_AUDIENCE`).
+async fn request_mid_token(rp_origin: &str, nonce: &str) -> Result<String, String> {
     // JSON-encode so the values land in the script as safely-quoted string literals.
-    let aud = serde_json::to_string(audience).unwrap_or_else(|_| "\"\"".to_owned());
+    let origin = serde_json::to_string(rp_origin).unwrap_or_else(|_| "\"\"".to_owned());
     let non = serde_json::to_string(nonce).unwrap_or_else(|_| "\"\"".to_owned());
     let script = format!(
         r#"
-        const audience = {aud};
+        const DISC = "__mata_mid_v1";
+        const ext = window["__mata_mid__"];
+        if (!ext || typeof ext !== "object" || ext.version !== 1) {{
+          console.warn("[Deputy mID] window.__mata_mid__ absent — extension not injected on this origin");
+          return {{ ok: false, error: "MATA extension not detected on this page. It must be installed, unlocked, and permitted on this origin (localhost). Or use Dev access below." }};
+        }}
+        const rpOrigin = {origin};
         const nonce = {non};
+        const requestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Math.random());
+        console.log("[Deputy mID] sign_in_request", {{ rpOrigin, nonce, requestId }});
         return await new Promise((resolve) => {{
-          const REQ = "mata-sovereign-id:request";
-          const RES = "mata-sovereign-id:response";
           let done = false;
           function onMsg(ev) {{
             const d = ev.data;
-            if (!d || d.type !== RES) return;
+            if (!d || d[DISC] !== true || d.kind !== "sign_in_response" || d.request_id !== requestId) return;
             done = true;
             window.removeEventListener("message", onMsg);
-            if (d.token) resolve({{ ok: true, token: d.token }});
-            else resolve({{ ok: false, error: d.error || "sign-in declined" }});
+            const r = d.result || {{}};
+            console.log("[Deputy mID] sign_in_response", r.outcome);
+            if (r.outcome === "ok") resolve({{ ok: true, token: r.jwt }});
+            else if (r.outcome === "denied") resolve({{ ok: false, error: "You denied the sign-in request in the MATA extension." }});
+            else resolve({{ ok: false, error: r.message || ("sign-in error: " + (r.error_code || "unknown")) }});
           }}
           window.addEventListener("message", onMsg);
-          window.postMessage({{ type: REQ, audience: audience, nonce: nonce }}, window.location.origin);
+          window.postMessage({{
+            [DISC]: true,
+            kind: "sign_in_request",
+            request_id: requestId,
+            rp_origin: rpOrigin,
+            nonce: nonce,
+            claims: {{ required: ["did"], optional: [], custom: {{}} }}
+          }}, "*");
           setTimeout(() => {{
             if (done) return;
             window.removeEventListener("message", onMsg);
-            resolve({{ ok: false, error: "no MATA extension responded — is it installed and unlocked?" }});
-          }}, 60000);
+            resolve({{ ok: false, error: "Timed out waiting for the MATA extension consent screen." }});
+          }}, 120000);
         }});
         "#
     );
@@ -301,6 +321,16 @@ async fn request_mid_token(audience: &str, nonce: &str) -> Result<String, String
             .unwrap_or("sign-in declined")
             .to_owned())
     }
+}
+
+/// The page's real origin (`window.location.origin`) — what the wallet binds the token's `aud`
+/// to, and what Deputy must verify against (so localhost vs 127.0.0.1 stays consistent).
+async fn page_origin() -> String {
+    dioxus::document::eval("return window.location.origin;")
+        .await
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
 }
 
 // ── Root: the mID auth gate ───────────────────────────────────────────────────
@@ -324,6 +354,7 @@ fn Landing(sess: Signal<Option<Session>>) -> Element {
     let mut sess = sess;
     let mut error = use_signal(|| None::<String>);
     let mut busy = use_signal(|| false);
+    let mut status = use_signal(|| None::<String>);
 
     rsx! {
         div { class: "landing",
@@ -339,26 +370,36 @@ fn Landing(sess: Signal<Option<Session>>) -> Element {
                         error.set(None);
                         spawn(async move {
                             // 1. Ask Deputy for a single-use challenge (nonce + audience).
+                            status.set(Some("Requesting a sign-in challenge…".to_string()));
                             let challenge = match get_json::<Challenge>("/auth/challenge").await {
                                 Ok(c) => c,
-                                Err(e) => { error.set(Some(format!("couldn't start sign-in — {e}"))); busy.set(false); return; }
+                                Err(e) => { status.set(None); error.set(Some(format!("couldn't start sign-in — {e}"))); busy.set(false); return; }
                             };
-                            // 2. Have the MATA extension sign it and return a wallet token.
-                            let token = match request_mid_token(&challenge.audience, &challenge.nonce).await {
+                            // 2. Have the MATA extension sign it. rp_origin MUST be the page's real
+                            //    origin (localhost vs 127.0.0.1) or the wallet rejects origin_mismatch.
+                            let origin = page_origin().await;
+                            status.set(Some("Waiting for the MATA extension…".to_string()));
+                            let token = match request_mid_token(&origin, &challenge.nonce).await {
                                 Ok(t) => t,
-                                Err(e) => { error.set(Some(e)); busy.set(false); return; }
+                                Err(e) => { status.set(None); error.set(Some(e)); busy.set(false); return; }
                             };
-                            // 3. Verify the token with Deputy → establishes the mID session.
-                            let body = serde_json::json!({ "token": token, "nonce": challenge.nonce });
+                            // 3. Verify the token with Deputy (against that same origin) → mID session.
+                            status.set(Some("Verifying…".to_string()));
+                            let body = serde_json::json!({ "token": token, "nonce": challenge.nonce, "audience": origin });
                             match post_json::<Session>("/auth/verify", &body).await {
                                 Ok(s) => sess.set(Some(s)),
                                 Err(e) => error.set(Some(format!("verification failed — {e}"))),
                             }
+                            status.set(None);
                             busy.set(false);
                         });
                     },
                     {if busy() { "Signing in…" } else { "Sign in with mID" }}
                 }
+                {match &*status.read() {
+                    Some(s) => rsx! { p { class: "muted login-hint", "{s}" } },
+                    None => rsx! {},
+                }}
                 div { class: "divider", span { "dev" } }
                 button {
                     class: "dev big",

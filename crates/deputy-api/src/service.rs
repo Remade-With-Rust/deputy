@@ -1269,9 +1269,18 @@ impl DeputyService {
         &self,
         token: &str,
         nonce: &str,
+        audience: &str,
         now_unix_secs: u64,
     ) -> Result<Session, ApiError> {
-        let params = VerifyParams::new(self.mid_audience.clone(), nonce.to_owned(), now_unix_secs);
+        // The RP origin the wallet bound the token's `aud` to. The page reports its own
+        // `window.location.origin` so the wallet's origin check passes whether the user browses via
+        // localhost or 127.0.0.1; fall back to the configured audience if none was sent.
+        let aud = if audience.trim().is_empty() {
+            self.mid_audience.clone()
+        } else {
+            audience.to_owned()
+        };
+        let params = VerifyParams::new(aud, nonce.to_owned(), now_unix_secs);
         let session = self
             .authenticator
             .authenticate(token, &params)

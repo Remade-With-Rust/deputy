@@ -152,6 +152,9 @@ struct AuthVerify {
     token: String,
     /// The nonce from the matching `/auth/challenge`, echoed back so we consume the right one.
     nonce: String,
+    /// The page's real origin (`window.location.origin`) the wallet bound the token's `aud` to.
+    #[serde(default)]
+    audience: String,
 }
 
 /// Issue a single-use sign-in challenge: the nonce the wallet embeds + the audience its token's
@@ -170,7 +173,7 @@ async fn auth_verify(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let s = svc.sign_in(&req.token, &req.nonce, now)?;
+    let s = svc.sign_in(&req.token, &req.nonce, &req.audience, now)?;
     Ok(Json(json!({
         "status": "ok",
         "did": s.did,

@@ -83,14 +83,23 @@ pub fn handle_mid_callback(url: &str) {
         })
         .unwrap_or_default();
     let body = serde_json::json!({ "token": jwt, "nonce": nonce, "audience": aud });
-    match reqwest::blocking::Client::new()
-        .post(format!("{API_BASE}/auth/verify"))
-        .json(&body)
-        .send()
-    {
-        Ok(r) => eprintln!("[Deputy mID] callback verify → HTTP {}", r.status()),
-        Err(e) => eprintln!("[Deputy mID] callback verify error: {e}"),
-    }
+    // Run the verify POST on a dedicated OS thread. reqwest::blocking spins up and then *drops* its
+    // own tokio runtime, which panics ("Cannot drop a runtime … from within an asynchronous
+    // context") when called on the desktop event-loop thread — dx drives that loop inside a tokio
+    // runtime. A freshly-spawned thread has no ambient runtime, so the drop is legal. We join so the
+    // argv cold-start path (main.rs) waits for completion before exiting; the localhost round-trip is
+    // sub-millisecond, so the brief block on the event-loop thread is negligible.
+    let _ = std::thread::spawn(move || {
+        match reqwest::blocking::Client::new()
+            .post(format!("{API_BASE}/auth/verify"))
+            .json(&body)
+            .send()
+        {
+            Ok(r) => eprintln!("[Deputy mID] callback verify → HTTP {}", r.status()),
+            Err(e) => eprintln!("[Deputy mID] callback verify error: {e}"),
+        }
+    })
+    .join();
 }
 
 // ── API response types (mirror the deputy-api JSON) ──────────────────────────

@@ -357,6 +357,46 @@ async fn fetch_lockfile_any(
     }
 }
 
+/// One project staged for acquisition (from a GitHub repo or a local folder): its display name,
+/// whether a lockfile was found, any fetch/read error, and the pins parsed from its `Cargo.lock`.
+struct StagedRepo {
+    repo: String,
+    lockfile_found: bool,
+    fetch_error: Option<String>,
+    pins: Vec<Pin>,
+}
+
+/// Recursively collect every `Cargo.lock` under `root` (skipping `target/` and dotdirs) so a local
+/// folder of projects can be ingested the same way as a set of GitHub repos.
+fn find_lockfiles(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let skip = path
+                    .file_name()
+                    .map(|n| {
+                        let n = n.to_string_lossy();
+                        n == "target" || n.starts_with('.')
+                    })
+                    .unwrap_or(false);
+                if !skip {
+                    stack.push(path);
+                }
+            } else if path.file_name().is_some_and(|n| n == "Cargo.lock") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Minimal `Cargo.lock` view used by the coverage check — we need *every* package, including the
 /// git/path ones [`parse_pins`] deliberately drops.
 #[derive(Deserialize)]
@@ -559,7 +599,6 @@ impl DeputyService {
         })
     }
 
-    /// Attach an advisory database used by [`DeputyService::scan`].
     // ── Persisted GitHub state ────────────────────────────────────────────────
     // Connections + folders live in the encrypted vault metadata so they survive restarts.
 
@@ -609,6 +648,7 @@ impl DeputyService {
         }
     }
 
+    /// Attach an advisory database used by [`DeputyService::scan`].
     pub fn with_advisories(mut self, advisories: AdvisoryDb) -> Self {
         self.advisories = std::sync::RwLock::new(advisories);
         self
@@ -730,31 +770,25 @@ impl DeputyService {
         let client = reqwest::Client::new();
 
         // Pre-pass: fetch each lockfile and parse its pins (the full transitive tree per repo).
-        struct Staged {
-            repo: String,
-            lockfile_found: bool,
-            fetch_error: Option<String>,
-            pins: Vec<Pin>,
-        }
         let mut staged = Vec::with_capacity(repos.len());
         for repo in repos {
             match fetch_lockfile_any(&client, &tokens, &repo).await {
                 Ok(Some(text)) => {
                     let pins = parse_pins(&text).unwrap_or_default();
-                    staged.push(Staged {
+                    staged.push(StagedRepo {
                         repo,
                         lockfile_found: true,
                         fetch_error: None,
                         pins,
                     });
                 }
-                Ok(None) => staged.push(Staged {
+                Ok(None) => staged.push(StagedRepo {
                     repo,
                     lockfile_found: false,
                     fetch_error: None,
                     pins: vec![],
                 }),
-                Err(e) => staged.push(Staged {
+                Err(e) => staged.push(StagedRepo {
                     repo,
                     lockfile_found: false,
                     fetch_error: Some(e),
@@ -762,10 +796,68 @@ impl DeputyService {
                 }),
             }
         }
+        Ok(self.finish_download(folder, staged))
+    }
 
-        // Deduplicate the pins across all repos IN MEMORY (content-addressed) so a crate shared
-        // by several repos is downloaded at most once. `acquire_one` additionally skips anything
-        // already sealed from a previous session, so nothing is ever fetched twice.
+    /// Acquire every dependency in the `Cargo.lock` files under a **local** folder path (no GitHub
+    /// needed). Each `Cargo.lock` is treated as a project; its name is its directory relative to
+    /// `path`. Useful when the source is already on disk and not pushed to GitHub.
+    pub fn download_local(&self, folder: String, path: String) -> Result<FolderSummary, ApiError> {
+        self.authorize_op(Ops::WRITE)?;
+        let root = std::path::Path::new(path.trim());
+        if !root.is_dir() {
+            return Err(ApiError::bad_request(format!(
+                "not a folder: {}",
+                root.display()
+            )));
+        }
+        let lockfiles = find_lockfiles(root);
+        if lockfiles.is_empty() {
+            return Err(ApiError::bad_request(
+                "no Cargo.lock found anywhere under that folder".to_owned(),
+            ));
+        }
+        let mut staged = Vec::with_capacity(lockfiles.len());
+        for lf in lockfiles {
+            // Name a project by its directory relative to the chosen folder (root itself → its name).
+            let name = lf
+                .parent()
+                .and_then(|p| p.strip_prefix(root).ok())
+                .map(|rel| {
+                    if rel.as_os_str().is_empty() {
+                        root.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| ".".to_owned())
+                    } else {
+                        rel.to_string_lossy().into_owned()
+                    }
+                })
+                .unwrap_or_else(|| lf.display().to_string());
+            match std::fs::read_to_string(&lf) {
+                Ok(text) => {
+                    let pins = parse_pins(&text).unwrap_or_default();
+                    staged.push(StagedRepo {
+                        repo: name,
+                        lockfile_found: true,
+                        fetch_error: None,
+                        pins,
+                    });
+                }
+                Err(e) => staged.push(StagedRepo {
+                    repo: name,
+                    lockfile_found: false,
+                    fetch_error: Some(e.to_string()),
+                    pins: vec![],
+                }),
+            }
+        }
+        Ok(self.finish_download(folder, staged))
+    }
+
+    /// Shared tail of [`Self::download_repos`] / [`Self::download_local`]: deduplicate pins across
+    /// all projects (content-addressed, so a crate shared by several is fetched at most once),
+    /// acquire the unique set once with progress, summarize per project, and persist the folder.
+    fn finish_download(&self, folder: String, staged: Vec<StagedRepo>) -> FolderSummary {
         let mut seen: HashSet<String> = HashSet::new();
         let mut unique_pins: Vec<Pin> = Vec::new();
         for s in &staged {
@@ -778,15 +870,16 @@ impl DeputyService {
         let total = unique_pins.len();
         *self.download_progress.lock().expect("progress mutex") = Some((0, total));
 
-        // Acquire the unique set once, reporting progress.
+        // Acquire the unique set once, reporting progress. `acquire_one` skips anything already
+        // sealed from a previous session, so nothing is ever fetched twice.
         let progress = &self.download_progress;
         acquire_pins(&self.vault, &self.ecosystem, &unique_pins, |i, _| {
             *progress.lock().expect("progress mutex") = Some((i, total));
         });
         *self.download_progress.lock().expect("progress mutex") = None;
 
-        // Per-repo summary: `deps` is its lockfile pin count; `acquired` is how many of its pins
-        // are now sealed (a crate shared with another repo counts as acquired for both).
+        // Per-project summary: `deps` is its lockfile pin count; `acquired` is how many of its pins
+        // are now sealed (a crate shared with another project counts as acquired for both).
         let mut summaries = Vec::with_capacity(staged.len());
         for s in staged {
             let acquired = s
@@ -831,7 +924,7 @@ impl DeputyService {
             .expect("folders mutex")
             .insert(folder, summary.clone());
         self.persist_folders();
-        Ok(summary)
+        summary
     }
 
     /// The live acquisition progress `(done, total)` for the in-flight download, if any.

@@ -55,6 +55,12 @@ struct DownloadRequest {
 }
 
 #[derive(Deserialize)]
+struct LocalDownloadRequest {
+    folder: String,
+    path: String,
+}
+
+#[derive(Deserialize)]
 struct DeleteFolder {
     name: String,
 }
@@ -123,6 +129,7 @@ pub fn router(service: Arc<DeputyService>) -> Router {
         .route("/github/connections", get(github_connections))
         .route("/github/repos", get(github_repos))
         .route("/github/download", post(github_download))
+        .route("/local/download", post(local_download))
         .route("/github/download/progress", get(download_progress))
         .route("/folders", get(folders))
         .route("/folders/delete", post(delete_folder))
@@ -416,6 +423,15 @@ async fn github_download(
     Json(req): Json<DownloadRequest>,
 ) -> Result<Json<FolderSummary>, ApiError> {
     Ok(Json(svc.download_repos(req.folder, req.repos).await?))
+}
+
+/// Acquire every dependency from the `Cargo.lock` files under a local folder path — same vault +
+/// progress as the GitHub path, no PAT required.
+async fn local_download(
+    State(svc): AppState,
+    Json(req): Json<LocalDownloadRequest>,
+) -> Result<Json<FolderSummary>, ApiError> {
+    Ok(Json(svc.download_local(req.folder, req.path)?))
 }
 
 async fn download_progress(State(svc): AppState) -> Json<Value> {

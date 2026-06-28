@@ -657,7 +657,15 @@ struct DownloadJob {
     active: Signal<bool>,
     progress: Signal<Option<ProgressView>>,
     result: Signal<Option<Result<FolderSummary, String>>>,
-    request: Signal<Option<serde_json::Value>>,
+    request: Signal<Option<DownloadReq>>,
+}
+
+/// A queued acquisition: which endpoint to POST (`/github/download` or `/local/download`) and its
+/// JSON body. The runner reports progress + result the same way for both.
+#[derive(Clone, PartialEq)]
+struct DownloadReq {
+    url: &'static str,
+    body: serde_json::Value,
 }
 
 #[component]
@@ -671,10 +679,10 @@ fn Dashboard(session: Session, sess: Signal<Option<Session>>) -> Element {
     let mut active = use_signal(|| false);
     let mut progress = use_signal(|| None::<ProgressView>);
     let mut result = use_signal(|| None::<Result<FolderSummary, String>>);
-    let mut request = use_signal(|| None::<serde_json::Value>);
+    let mut request = use_signal(|| None::<DownloadReq>);
     use_effect(move || {
         // Fires when a tab dispatches a new download via `request`.
-        if let Some(body) = request() {
+        if let Some(req) = request() {
             request.set(None);
             active.set(true);
             progress.set(None);
@@ -693,7 +701,7 @@ fn Dashboard(session: Session, sess: Signal<Option<Session>>) -> Element {
             });
             // The download itself — kept alive here, so it survives tab navigation.
             spawn(async move {
-                result.set(Some(post_json::<FolderSummary>("/github/download", &body).await));
+                result.set(Some(post_json::<FolderSummary>(req.url, &req.body).await));
                 active.set(false);
             });
         }
@@ -764,8 +772,9 @@ fn NavItem(tab: Signal<Tab>, this: Tab, label: String) -> Element {
 #[component]
 fn GitHubTab() -> Element {
     let mut token = use_signal(String::new);
-    let mut label = use_signal(String::new);
     let mut owner = use_signal(String::new);
+    let mut local_path = use_signal(String::new);
+    let mut local_folder = use_signal(String::new);
     let mut hide_forks = use_signal(|| true);
     let mut connections = use_signal(Vec::<String>::new);
     let mut repos = use_signal(|| None::<Result<Vec<Repo>, String>>);
@@ -841,12 +850,6 @@ fn GitHubTab() -> Element {
             div { class: "gh-connect",
                 input {
                     class: "acct-label",
-                    value: "{label}",
-                    oninput: move |e| label.set(e.value()),
-                    placeholder: "label (optional)",
-                }
-                input {
-                    class: "acct-label",
                     value: "{owner}",
                     oninput: move |e| owner.set(e.value()),
                     placeholder: "org / user to list (e.g. Remade-With-Rust)",
@@ -861,14 +864,13 @@ fn GitHubTab() -> Element {
                     class: "gh",
                     disabled: connecting() || token().trim().is_empty(),
                     onclick: move |_| {
-                        let body = serde_json::json!({ "token": token(), "label": label(), "owner": owner() });
+                        let body = serde_json::json!({ "token": token(), "label": "", "owner": owner() });
                         connecting.set(true);
                         connect_err.set(None);
                         spawn(async move {
                             match post_json::<serde_json::Value>("/github/connect", &body).await {
                                 Ok(_) => {
                                     token.set(String::new());
-                                    label.set(String::new());
                                     owner.set(String::new());
                                     if let Ok(labels) = get_json::<Vec<String>>("/github/connections").await {
                                         connections.set(labels);
@@ -888,8 +890,44 @@ fn GitHubTab() -> Element {
                 None => rsx! {},
             }}
             p { class: "muted gh-hint",
-                "Add one or more fine-grained PATs (read access to your repos). Each is held in "
-                "memory for this session only; repositories from every account are listed together."
+                "Add one or more fine-grained PATs (read access to your repos). They're saved "
+                "encrypted in your vault and restored on next launch; repos from every account "
+                "are listed together."
+            }
+
+            // Local folder — pull dependency source straight from on-disk projects, no GitHub.
+            div { class: "panel-head local-head", h2 { "Local folder" } }
+            p { class: "muted gh-hint",
+                "Point at a folder on this machine. Every Cargo.lock under it is read and all of "
+                "its dependency source is pulled into the vault — no GitHub or PAT needed."
+            }
+            div { class: "gh-connect",
+                input {
+                    class: "acct-label local-path",
+                    value: "{local_path}",
+                    oninput: move |e| local_path.set(e.value()),
+                    placeholder: "local folder path (e.g. /Users/you/code)",
+                }
+                input {
+                    class: "acct-label",
+                    value: "{local_folder}",
+                    oninput: move |e| local_folder.set(e.value()),
+                    placeholder: "folder name (e.g. Local Projects)",
+                }
+                button {
+                    class: "primary",
+                    disabled: downloading()
+                        || local_path().trim().is_empty()
+                        || local_folder().trim().is_empty(),
+                    onclick: move |_| {
+                        let body = serde_json::json!({
+                            "folder": local_folder().trim(),
+                            "path": local_path().trim(),
+                        });
+                        request.set(Some(DownloadReq { url: "/local/download", body }));
+                    },
+                    {if downloading() { "Pulling…" } else { "Pull from local folder" }}
+                }
             }
 
             {match snapshot {
@@ -956,7 +994,7 @@ fn GitHubTab() -> Element {
                                 });
                                 // Hand off to the persistent runner in Dashboard, so the download
                                 // keeps going and its progress keeps updating across tab switches.
-                                request.set(Some(body));
+                                request.set(Some(DownloadReq { url: "/github/download", body }));
                             },
                             {if downloading() { "Downloading…" } else { "Download and Analyze" }}
                         }
@@ -1896,6 +1934,8 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: #8b5cf6; cursor:
 .gh-connect { display: flex; gap: 10px; align-items: center; margin: 12px 0 8px; }
 .gh-connect input { flex: 1; }
 .gh-hint { font-size: 13px; }
+.local-head { margin-top: 28px; border-top: 1px solid #2a2f3a; padding-top: 18px; }
+.local-path { max-width: 380px; flex: 1; }
 
 .repolist { list-style: none; padding: 0; margin: 12px 0; }
 .repo-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid #2a2f3a; }

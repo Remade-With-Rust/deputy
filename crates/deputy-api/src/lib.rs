@@ -48,17 +48,19 @@ pub fn default_vault_dir() -> Option<PathBuf> {
         .map(|home| PathBuf::from(home).join(".deputy"))
 }
 
-/// Open a **local-identity** service at `dir`, creating the vault on first run (mID deactivated).
-/// One-call convenience for embedding the API — e.g. the self-contained desktop app — so callers
-/// don't need to depend on `deputy-store` directly. Access is gated by the passphrase.
+/// Open a **local-identity** service at `dir`, creating the vault on first run (mID deactivated —
+/// the *embed / off* mode). One-call convenience for embedding the API in software that already
+/// owns its auth + encryption. Access is gated by the passphrase only; the vault is **not** bound
+/// to an mID identity and is unlocked immediately.
 pub fn open_or_create_local(dir: &Path, passphrase: &[u8]) -> Result<DeputyService, ApiError> {
-    // `create` returns `AlreadyInitialized` cheaply (no Argon2) when the vault exists, so this is
-    // a fresh derive only on first run; `open_local` then unlocks it.
-    match deputy_store::Vault::create(dir, passphrase) {
-        Ok(_) | Err(deputy_store::StoreError::AlreadyInitialized) => {}
-        Err(e) => return Err(ApiError::bad_request(format!("opening vault: {e}"))),
-    }
     DeputyService::open_local(dir, passphrase)
+}
+
+/// Open an **mID-gated** service at `dir` (the secure default). The vault stays sealed until an mID
+/// sign-in supplies a verified DID, then unlocks **bound to that identity** — so a different mID can
+/// never open it, and no vault data is reachable before sign-in. Created on first sign-in.
+pub fn open_gated(dir: &Path, passphrase: &[u8]) -> Result<DeputyService, ApiError> {
+    DeputyService::open_gated_locked(dir, passphrase)
 }
 
 /// Serve the API on `addr`. Bind to loopback (e.g. `127.0.0.1`) — this is a personal,

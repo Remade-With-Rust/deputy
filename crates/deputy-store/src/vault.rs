@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use deputy_crypto::{
-    check_verifier, derive_master, derive_subkey, make_verifier, KdfParams, KeyDomain, MasterKey,
+    check_verifier, derive_master_bound, derive_subkey, make_verifier, KdfParams, KeyDomain,
+    MasterKey,
     SubKey,
 };
 use serde::{Deserialize, Serialize};
@@ -53,6 +54,12 @@ impl Vault {
     /// logs/audit.log       hash-chained append-only provenance
     /// ```
     pub fn create(root: impl AsRef<Path>, passphrase: &[u8]) -> Result<Self> {
+        Self::create_bound(root, passphrase, &[])
+    }
+
+    /// Like [`Self::create`], but additionally binds the vault to `binding` (e.g. an mID DID) — the
+    /// vault can then only be unlocked with the same binding. An empty `binding` equals [`create`].
+    pub fn create_bound(root: impl AsRef<Path>, passphrase: &[u8], binding: &[u8]) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         let kdf_path = Self::kdf_path(&root);
         if kdf_path.exists() {
@@ -60,7 +67,7 @@ impl Vault {
         }
 
         let params = KdfParams::recommended()?;
-        let master = derive_master(passphrase, &params)?;
+        let master = derive_master_bound(passphrase, &params, binding)?;
         let verifier = make_verifier(&master)?;
 
         for dir in [
@@ -82,6 +89,13 @@ impl Vault {
     /// [`StoreError::WrongPassphrase`] if the passphrase does not match the stored verifier,
     /// and [`StoreError::NotInitialized`] if no vault exists there.
     pub fn unlock(root: impl AsRef<Path>, passphrase: &[u8]) -> Result<Self> {
+        Self::unlock_bound(root, passphrase, &[])
+    }
+
+    /// Like [`Self::unlock`], but requires the same `binding` the vault was created with. A wrong
+    /// binding fails with [`StoreError::WrongPassphrase`] (the derived key won't match the verifier)
+    /// — so a vault sealed under one mID identity cannot be opened under another. Empty = [`unlock`].
+    pub fn unlock_bound(root: impl AsRef<Path>, passphrase: &[u8], binding: &[u8]) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         let kdf_path = Self::kdf_path(&root);
         if !kdf_path.exists() {
@@ -90,7 +104,7 @@ impl Vault {
 
         let raw = fs::read(&kdf_path)?;
         let file: MasterKdfFile = serde_json::from_slice(&raw)?;
-        let master = derive_master(passphrase, &file.params)?;
+        let master = derive_master_bound(passphrase, &file.params, binding)?;
         if !check_verifier(&master, &file.verifier) {
             return Err(StoreError::WrongPassphrase);
         }

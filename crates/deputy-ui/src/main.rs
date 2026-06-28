@@ -53,7 +53,16 @@ fn main() {
         );
         std::process::exit(1);
     }
-    let service = match deputy_api::open_or_create_local(&dir, passphrase.as_bytes()) {
+    // Default: mID-GATED — the vault stays sealed until you sign in with mID, then unlocks bound to
+    // your verified DID (a different identity can't open it). Set DEPUTY_NO_MID=1 to embed Deputy in
+    // a tool that already owns its auth + encryption, which opens the vault on passphrase alone.
+    let embed = std::env::var_os("DEPUTY_NO_MID").is_some();
+    let opened = if embed {
+        deputy_api::open_or_create_local(&dir, passphrase.as_bytes())
+    } else {
+        deputy_api::open_gated(&dir, passphrase.as_bytes())
+    };
+    let service = match opened {
         Ok(s) => s,
         Err(e) => {
             eprintln!("deputy-ui: {e:?}");
@@ -62,8 +71,9 @@ fn main() {
     };
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 7878));
     eprintln!(
-        "deputy-ui: vault {} — embedded API on http://{addr}",
-        dir.display()
+        "deputy-ui: vault {} — embedded API on http://{addr} ({})",
+        dir.display(),
+        if embed { "embed: passphrase-only" } else { "mID-gated (sign in to unlock)" }
     );
     std::thread::spawn(move || {
         if let Err(e) = deputy_api::serve_blocking(service, addr) {

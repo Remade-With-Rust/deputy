@@ -36,12 +36,27 @@ impl KdfParams {
 
 /// Derive the 256-bit [`MasterKey`] from `passphrase` using Argon2id with the given `params`.
 pub fn derive_master(passphrase: &[u8], params: &KdfParams) -> Result<MasterKey> {
-    let argon = Argon2::new(
-        Algorithm::Argon2id,
-        Version::V0x13,
-        Params::new(params.m_cost, params.t_cost, params.p_cost, Some(32))
-            .map_err(|e| CryptoError::Params(e.to_string()))?,
-    );
+    derive_master_bound(passphrase, params, &[])
+}
+
+/// Derive the [`MasterKey`] like [`derive_master`], but additionally **bound to `binding`** via
+/// Argon2id's secret (pepper) input. A vault sealed with one binding (e.g. an mID DID) cannot be
+/// re-derived with a different binding, even with the same passphrase and salt — the key simply
+/// differs, so the stored verifier won't match. An **empty** `binding` reproduces [`derive_master`]
+/// byte-for-byte, so existing (unbound) vaults keep opening unchanged.
+pub fn derive_master_bound(
+    passphrase: &[u8],
+    params: &KdfParams,
+    binding: &[u8],
+) -> Result<MasterKey> {
+    let p = Params::new(params.m_cost, params.t_cost, params.p_cost, Some(32))
+        .map_err(|e| CryptoError::Params(e.to_string()))?;
+    let argon = if binding.is_empty() {
+        Argon2::new(Algorithm::Argon2id, Version::V0x13, p)
+    } else {
+        Argon2::new_with_secret(binding, Algorithm::Argon2id, Version::V0x13, p)
+            .map_err(|e| CryptoError::Params(e.to_string()))?
+    };
     let mut out = [0u8; 32];
     argon
         .hash_password_into(passphrase, &params.salt, &mut out)

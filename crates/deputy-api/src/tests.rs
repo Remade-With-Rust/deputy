@@ -6,7 +6,6 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use deputy_deploy::GateDecision;
 use deputy_id::Session;
-use deputy_store::Vault;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -36,7 +35,6 @@ fn test_session(exp: u64) -> Session {
 /// An opened service over a fresh vault, plus the temp dir keeping it alive.
 fn test_service() -> (DeputyService, TempDir) {
     let dir = TempDir::new().unwrap();
-    drop(Vault::create(dir.path(), b"pw").unwrap());
     let svc = DeputyService::open(dir.path(), b"pw", test_session(u64::MAX), 0).unwrap();
     (svc, dir)
 }
@@ -50,11 +48,12 @@ fn source_with_lock() -> TempDir {
 #[test]
 fn open_is_gated_on_a_valid_session_and_passphrase() {
     let dir = TempDir::new().unwrap();
-    drop(Vault::create(dir.path(), b"pw").unwrap());
+    // First open creates the vault, bound to the session's verified DID.
+    drop(DeputyService::open(dir.path(), b"pw", test_session(u64::MAX), 0).unwrap());
 
-    // Expired session → rejected even with the right passphrase.
+    // Expired session → rejected even with the right passphrase (before any unlock).
     assert!(DeputyService::open(dir.path(), b"pw", test_session(100), 200).is_err());
-    // Wrong passphrase → rejected even with a valid session.
+    // Wrong passphrase → rejected even with a valid session (verifier mismatch).
     assert!(DeputyService::open(dir.path(), b"wrong", test_session(u64::MAX), 0).is_err());
     // Both correct → opens.
     assert!(DeputyService::open(dir.path(), b"pw", test_session(u64::MAX), 0).is_ok());
@@ -87,7 +86,6 @@ fn gate_blocks_an_unpromoted_tree() {
 fn owner_has_full_access_but_scoped_capabilities_are_enforced() {
     use crate::Ops;
     let dir = TempDir::new().unwrap();
-    drop(Vault::create(dir.path(), b"pw").unwrap());
     let mut svc = DeputyService::open(dir.path(), b"pw", test_session(u64::MAX), 0).unwrap();
 
     // The owner self-grant covers read, write, and compute.
@@ -115,7 +113,6 @@ fn owner_has_full_access_but_scoped_capabilities_are_enforced() {
 fn expired_capability_is_denied() {
     use crate::Ops;
     let dir = TempDir::new().unwrap();
-    drop(Vault::create(dir.path(), b"pw").unwrap());
     let mut svc = DeputyService::open(dir.path(), b"pw", test_session(u64::MAX), 0).unwrap();
 
     // Expiry of 1 (1970) is far in the past.
@@ -128,7 +125,6 @@ fn expired_capability_is_denied() {
 fn a_read_only_agent_cannot_run_a_write_operation() {
     use crate::Ops;
     let dir = TempDir::new().unwrap();
-    drop(Vault::create(dir.path(), b"pw").unwrap());
     let mut svc = DeputyService::open(dir.path(), b"pw", test_session(u64::MAX), 0).unwrap();
     svc.act_as(svc.grant("did:agent:reader", Ops::READ, None).unwrap());
 
@@ -141,7 +137,6 @@ fn a_read_only_agent_cannot_run_a_write_operation() {
 fn local_mode_deactivates_mid_but_still_gates_capabilities() {
     use crate::Ops;
     let dir = TempDir::new().unwrap();
-    drop(Vault::create(dir.path(), b"pw").unwrap());
 
     // mID deactivated: no session/token needed, opens straight on the passphrase.
     let svc = DeputyService::open_local(dir.path(), b"pw").unwrap();
@@ -151,6 +146,27 @@ fn local_mode_deactivates_mid_but_still_gates_capabilities() {
     // The capability layer still applies — the owner self-grant covers read + write.
     assert!(svc.authorize_op(Ops::READ).is_ok());
     assert!(svc.authorize_op(Ops::WRITE).is_ok());
+}
+
+#[test]
+fn a_vault_bound_to_one_mid_cannot_be_opened_by_another() {
+    let dir = TempDir::new().unwrap();
+    let with_did = |did: &str| Session {
+        did: did.to_owned(),
+        ..test_session(u64::MAX)
+    };
+
+    // First open creates the vault bound to identity A.
+    drop(DeputyService::open(dir.path(), b"pw", with_did("did:mata:alice"), 0).unwrap());
+
+    // Same passphrase, a DIFFERENT mID identity → refused (the DID-bound key won't match).
+    assert!(
+        DeputyService::open(dir.path(), b"pw", with_did("did:mata:mallory"), 0).is_err(),
+        "a different mID identity must not open the vault"
+    );
+
+    // Identity A re-opens fine.
+    assert!(DeputyService::open(dir.path(), b"pw", with_did("did:mata:alice"), 0).is_ok());
 }
 
 #[test]

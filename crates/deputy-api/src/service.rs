@@ -480,7 +480,13 @@ async fn crates_io_latest_versioned(
 /// SpaceDB **capability** (Layer 5) that gates every operation for the acting principal — a
 /// human or an AI agent.
 pub struct DeputyService {
-    vault: Vault,
+    /// The unlocked vault, or `None` until an mID sign-in unlocks it (the *gated* default). The
+    /// vault key is bound to the verified mID DID, so a different identity cannot open it — and in
+    /// gated mode no vault data is reachable before sign-in. Embed/local mode unlocks it up front.
+    vault: std::sync::Mutex<Option<std::sync::Arc<Vault>>>,
+    /// Held so the vault can be unlocked later (gated mode) and re-bound to the signed-in DID.
+    root: std::path::PathBuf,
+    passphrase: Vec<u8>,
     /// The acting principal. Swappable at runtime: a browser mID sign-in ([`Self::sign_in`])
     /// replaces it with the verified wallet identity. The capability layer below gates ops
     /// independently; this is who the principal *is* (DID shown, used in promotion receipts).
@@ -535,15 +541,33 @@ impl DeputyService {
         now_unix_secs: u64,
     ) -> Result<Self, ApiError> {
         session.ensure_valid(now_unix_secs)?;
-        Self::assemble(root, passphrase, session, true)
+        let did = session.did.clone();
+        let svc = Self::assemble(root, passphrase, session, true)?;
+        // mID active: bind the vault to the verified DID and unlock immediately.
+        svc.unlock_vault(did.as_bytes())?;
+        Ok(svc)
     }
 
-    /// Open the service with **mID deactivated**: no mID token is required, and the owner is a
-    /// synthetic local identity ([`LOCAL_DID`]). For embedding Deputy in software that owns its
-    /// own auth, and for local development. Access is then gated only by passphrase possession
-    /// (plus the capability layer); there is no federated identity behind the owner.
+    /// Open with **mID deactivated** (the embed / off toggle): no mID token required, owner is a
+    /// synthetic local identity ([`LOCAL_DID`]), and the vault is unlocked up front with **no DID
+    /// binding**. For embedding Deputy in software that already owns its auth + encryption, and for
+    /// local development / the CLI. Access is then gated only by passphrase possession.
     pub fn open_local(root: impl AsRef<Path>, passphrase: &[u8]) -> Result<Self, ApiError> {
-        let session = Session {
+        let svc = Self::assemble(root, passphrase, Self::local_session(), false)?;
+        svc.unlock_vault(&[])?; // embed: unbound, unlocked now
+        Ok(svc)
+    }
+
+    /// Open **gated and locked** — the secure default. The vault stays sealed until an mID sign-in
+    /// ([`Self::sign_in`]) supplies a verified DID, at which point it is unlocked **bound to that
+    /// DID**. Until then every vault-backed op returns `vault locked`, and a different identity can
+    /// never open it. For the desktop app, which signs in interactively after the window opens.
+    pub fn open_gated_locked(root: impl AsRef<Path>, passphrase: &[u8]) -> Result<Self, ApiError> {
+        Self::assemble(root, passphrase, Self::local_session(), false)
+    }
+
+    fn local_session() -> Session {
+        Session {
             did: LOCAL_DID.to_owned(),
             claims: std::collections::BTreeMap::new(),
             current_version: 0,
@@ -551,20 +575,17 @@ impl DeputyService {
             iat: 0,
             exp: u64::MAX,
             aud: LOCAL_DID.to_owned(),
-        };
-        Self::assemble(root, passphrase, session, false)
+        }
     }
 
-    /// Unlock the vault and mint the owner's self-granted capability. Shared by [`Self::open`]
-    /// (mID active) and [`Self::open_local`] (mID deactivated).
+    /// Build the service shell (owner/capability/auth) with the vault **locked** (`None`). The
+    /// caller unlocks via [`Self::unlock_vault`] — now (embed/open) or at sign-in (gated).
     fn assemble(
         root: impl AsRef<Path>,
         passphrase: &[u8],
         session: Session,
         mid_active: bool,
     ) -> Result<Self, ApiError> {
-        let vault = Vault::unlock(root, passphrase)?;
-
         let owner = Identity::generate(session.did.clone())?;
         let directory = MemKeyDirectory::new();
         directory.publish(&owner)?;
@@ -581,14 +602,10 @@ impl DeputyService {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "http://localhost:8080".to_owned());
 
-        // Reload GitHub connections + folder groupings persisted on a previous run (encrypted in
-        // the vault), so they survive app restarts instead of resetting every launch.
-        let github_connections = Self::load_github_connections(&vault);
-        let folders = Self::load_folders(&vault);
-        let folder_lockfiles = Self::load_folder_lockfiles(&vault);
-
         Ok(Self {
-            vault,
+            vault: std::sync::Mutex::new(None),
+            root: root.as_ref().to_path_buf(),
+            passphrase: passphrase.to_vec(),
             session: std::sync::Mutex::new(session),
             ecosystem: CargoEcosystem::new(),
             advisories: std::sync::RwLock::new(AdvisoryDb::new()),
@@ -599,12 +616,50 @@ impl DeputyService {
             authenticator: Authenticator::in_memory(),
             mid_audience,
             mid_active: std::sync::atomic::AtomicBool::new(mid_active),
-            github_connections: std::sync::Mutex::new(github_connections),
-            folders: std::sync::Mutex::new(folders),
-            folder_lockfiles: std::sync::Mutex::new(folder_lockfiles),
+            github_connections: std::sync::Mutex::new(Vec::new()),
+            folders: std::sync::Mutex::new(HashMap::new()),
+            folder_lockfiles: std::sync::Mutex::new(HashMap::new()),
             analytics_cache: std::sync::Mutex::new(HashMap::new()),
             download_progress: std::sync::Mutex::new(None),
         })
+    }
+
+    /// The unlocked vault, or a `vault locked` error if no sign-in has unlocked it yet (gated mode).
+    fn vault(&self) -> Result<std::sync::Arc<Vault>, ApiError> {
+        self.vault
+            .lock()
+            .expect("vault mutex")
+            .clone()
+            .ok_or_else(|| ApiError::unauthorized("vault locked — sign in with mID to unlock"))
+    }
+
+    /// Whether the vault is currently unlocked.
+    fn vault_unlocked(&self) -> bool {
+        self.vault.lock().expect("vault mutex").is_some()
+    }
+
+    /// Unlock (or first-time create) the vault bound to `binding` (an mID DID, or empty for embed
+    /// mode), then load the GitHub connections + folders persisted in it. A wrong binding means the
+    /// vault was sealed under a different identity (or passphrase) → refused.
+    fn unlock_vault(&self, binding: &[u8]) -> Result<(), ApiError> {
+        let vault = match Vault::unlock_bound(&self.root, &self.passphrase, binding) {
+            Ok(v) => v,
+            Err(deputy_store::StoreError::NotInitialized) => {
+                Vault::create_bound(&self.root, &self.passphrase, binding)?
+            }
+            Err(e) => return Err(e.into()),
+        };
+        *self
+            .github_connections
+            .lock()
+            .expect("github connections mutex") = Self::load_github_connections(&vault);
+        *self.folders.lock().expect("folders mutex") = Self::load_folders(&vault);
+        *self
+            .folder_lockfiles
+            .lock()
+            .expect("folder lockfiles mutex") = Self::load_folder_lockfiles(&vault);
+        *self.vault.lock().expect("vault mutex") = Some(std::sync::Arc::new(vault));
+        Ok(())
     }
 
     // ── Persisted GitHub state ────────────────────────────────────────────────
@@ -637,8 +692,8 @@ impl DeputyService {
             .lock()
             .expect("github connections mutex")
             .clone();
-        if let Ok(json) = serde_json::to_vec(&snapshot) {
-            let _ = self.vault.put_app_state("github_connections", &json);
+        if let (Ok(json), Ok(vault)) = (serde_json::to_vec(&snapshot), self.vault()) {
+            let _ = vault.put_app_state("github_connections", &json);
         }
     }
 
@@ -651,8 +706,8 @@ impl DeputyService {
             .values()
             .cloned()
             .collect();
-        if let Ok(json) = serde_json::to_vec(&snapshot) {
-            let _ = self.vault.put_app_state("folders", &json);
+        if let (Ok(json), Ok(vault)) = (serde_json::to_vec(&snapshot), self.vault()) {
+            let _ = vault.put_app_state("folders", &json);
         }
     }
 
@@ -672,19 +727,30 @@ impl DeputyService {
             .lock()
             .expect("folder lockfiles mutex")
             .clone();
-        if let Ok(json) = serde_json::to_vec(&snapshot) {
-            let _ = self.vault.put_app_state("folder_lockfiles", &json);
+        if let (Ok(json), Ok(vault)) = (serde_json::to_vec(&snapshot), self.vault()) {
+            let _ = vault.put_app_state("folder_lockfiles", &json);
         }
     }
 
-    /// The stored `(project, lockfile text)` pairs for a folder, or an error if the folder is gone.
+    /// The stored `(project, lockfile text)` pairs for a folder. Errors if the folder is unknown,
+    /// or — for folders downloaded before lockfile capture — asks the user to re-pull it.
     fn stored_lockfiles(&self, name: &str) -> Result<Vec<(String, String)>, ApiError> {
-        self.folder_lockfiles
+        if let Some(lockfiles) = self
+            .folder_lockfiles
             .lock()
             .expect("folder lockfiles mutex")
             .get(name)
             .cloned()
-            .ok_or_else(|| ApiError::bad_request(format!("no such folder: {name}")))
+        {
+            return Ok(lockfiles);
+        }
+        if self.folders.lock().expect("folders mutex").contains_key(name) {
+            Err(ApiError::bad_request(format!(
+                "folder '{name}' was downloaded before lockfile capture — re-pull it to enable analytics/scan/coverage"
+            )))
+        } else {
+            Err(ApiError::bad_request(format!("no such folder: {name}")))
+        }
     }
 
     /// Attach an advisory database used by [`DeputyService::scan`].
@@ -838,7 +904,7 @@ impl DeputyService {
                 }),
             }
         }
-        Ok(self.finish_download(folder, staged))
+        self.finish_download(folder, staged)
     }
 
     /// Acquire every dependency in the `Cargo.lock` files under a **local** folder path (no GitHub
@@ -895,13 +961,18 @@ impl DeputyService {
                 }),
             }
         }
-        Ok(self.finish_download(folder, staged))
+        self.finish_download(folder, staged)
     }
 
     /// Shared tail of [`Self::download_repos`] / [`Self::download_local`]: deduplicate pins across
     /// all projects (content-addressed, so a crate shared by several is fetched at most once),
     /// acquire the unique set once with progress, summarize per project, and persist the folder.
-    fn finish_download(&self, folder: String, staged: Vec<StagedRepo>) -> FolderSummary {
+    fn finish_download(
+        &self,
+        folder: String,
+        staged: Vec<StagedRepo>,
+    ) -> Result<FolderSummary, ApiError> {
+        let vault = self.vault()?;
         // Keep each project's raw lockfile so folder ops (analytics/scan/coverage/heartbeat) can
         // re-parse it offline — they no longer re-fetch from GitHub, which never worked for local
         // folders and defeated the offline-vault purpose anyway.
@@ -925,7 +996,7 @@ impl DeputyService {
         // Acquire the unique set once, reporting progress. `acquire_one` skips anything already
         // sealed from a previous session, so nothing is ever fetched twice.
         let progress = &self.download_progress;
-        acquire_pins(&self.vault, &self.ecosystem, &unique_pins, |i, _| {
+        acquire_pins(&vault, &self.ecosystem, &unique_pins, |i, _| {
             *progress.lock().expect("progress mutex") = Some((i, total));
         });
         *self.download_progress.lock().expect("progress mutex") = None;
@@ -938,7 +1009,7 @@ impl DeputyService {
                 .pins
                 .iter()
                 .filter(|p| {
-                    self.vault
+                    vault
                         .has_artifact(StoreKind::Dirty, &p.expected)
                         .unwrap_or(false)
                 })
@@ -981,7 +1052,7 @@ impl DeputyService {
             .insert(folder, summary.clone());
         self.persist_folders();
         self.persist_folder_lockfiles();
-        summary
+        Ok(summary)
     }
 
     /// The live acquisition progress `(done, total)` for the in-flight download, if any.
@@ -1038,8 +1109,8 @@ impl DeputyService {
         let pins = self.folder_unique_pins(&name)?;
         let total_deps = pins.len();
 
-        let this = std::sync::Arc::clone(&self);
-        let body = tokio::task::spawn_blocking(move || compute_dep_analytics(&this.vault, pins))
+        let vault = self.vault()?;
+        let body = tokio::task::spawn_blocking(move || compute_dep_analytics(&vault, pins))
             .await
             .map_err(|e| ApiError::bad_request(format!("analytics task failed: {e}")))?;
 
@@ -1158,13 +1229,13 @@ impl DeputyService {
             ));
         }
         let new_pins = parse_pins(&lockfile).unwrap_or_default();
-        acquire_pins(&self.vault, &self.ecosystem, &new_pins, |_, _| {});
+        let vault = self.vault()?;
+        acquire_pins(&vault, &self.ecosystem, &new_pins, |_, _| {});
 
         let entries = updates
             .into_iter()
             .map(|(dep, cur, new, _)| {
-                let in_production = self
-                    .vault
+                let in_production = vault
                     .crate_hash(StoreKind::Prod, &dep, &cur)
                     .ok()
                     .flatten()
@@ -1173,7 +1244,7 @@ impl DeputyService {
                     .iter()
                     .find(|p| p.dep.name.as_str() == dep && p.dep.version.as_str() == new)
                     .map(|p| {
-                        self.vault
+                        vault
                             .has_artifact(StoreKind::Dirty, &p.expected)
                             .unwrap_or(false)
                     })
@@ -1196,6 +1267,7 @@ impl DeputyService {
     /// Deputy can't content-verify. Path/workspace members (your own code) are ignored.
     pub fn folder_coverage(&self, name: String) -> Result<CoverageReport, ApiError> {
         self.authorize_op(Ops::READ)?;
+        let vault = self.vault()?;
 
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut registry_total = 0usize;
@@ -1227,13 +1299,8 @@ impl DeputyService {
                         .as_deref()
                         .and_then(|c| ContentHash::from_sha256_hex(c).ok())
                         .map(|h| {
-                            self.vault
-                                .has_artifact(StoreKind::Dirty, &h)
-                                .unwrap_or(false)
-                                || self
-                                    .vault
-                                    .has_artifact(StoreKind::Prod, &h)
-                                    .unwrap_or(false)
+                            vault.has_artifact(StoreKind::Dirty, &h).unwrap_or(false)
+                                || vault.has_artifact(StoreKind::Prod, &h).unwrap_or(false)
                         })
                         .unwrap_or(false);
                     if staged {
@@ -1272,6 +1339,7 @@ impl DeputyService {
         hold: Vec<(String, String)>,
     ) -> Result<usize, ApiError> {
         self.authorize_op(Ops::WRITE)?;
+        let vault = self.vault()?;
         let pins = self.folder_unique_pins(&name)?;
         let hold: HashSet<(String, String)> = hold.into_iter().collect();
         let did = self.session().did;
@@ -1285,7 +1353,7 @@ impl DeputyService {
                 );
                 !hold.contains(&key)
                     && promote(
-                        &self.vault,
+                        &vault,
                         pin.dep.ecosystem,
                         pin.dep.name.as_str(),
                         pin.dep.version.as_str(),
@@ -1302,7 +1370,7 @@ impl DeputyService {
     pub fn production_deps(&self) -> Result<Vec<ProdDep>, ApiError> {
         self.authorize_op(Ops::READ)?;
         let mut deps: Vec<ProdDep> = self
-            .vault
+            .vault()?
             .list_store_crates(StoreKind::Prod)?
             .into_iter()
             .map(|(name, version, hash)| ProdDep {
@@ -1320,15 +1388,16 @@ impl DeputyService {
     /// checks; integrity is skipped for not-yet-acquired deps and noted as such).
     pub fn scan_folder(&self, name: String) -> Result<FolderScanReport, ApiError> {
         self.authorize_op(Ops::WRITE)?;
+        let vault = self.vault()?;
         let repos = self
             .stored_lockfiles(&name)?
             .into_iter()
-            .map(|(full_name, text)| self.scan_repo(full_name, &text))
+            .map(|(full_name, text)| self.scan_repo(&vault, full_name, &text))
             .collect();
         Ok(FolderScanReport { name, repos })
     }
 
-    fn scan_repo(&self, full_name: String, text: &str) -> RepoScanResult {
+    fn scan_repo(&self, vault: &Vault, full_name: String, text: &str) -> RepoScanResult {
         let pins = match parse_pins(text) {
             Ok(p) => p,
             Err(e) => {
@@ -1345,7 +1414,7 @@ impl DeputyService {
         let mut findings = Vec::new();
         for pin in &pins {
             if let Ok(report) = scan(
-                &self.vault,
+                vault,
                 pin,
                 &self.advisories.read().expect("advisories lock"),
             ) {
@@ -1409,6 +1478,11 @@ impl DeputyService {
             .authenticator
             .authenticate(token, &params)
             .map_err(|e| ApiError::unauthorized(format!("mID sign-in failed: {e}")))?;
+        // Gated mode: the vault is still locked, so unlock it bound to this verified DID. (In embed
+        // mode it's already unlocked unbound, so we keep that vault and just record the session.)
+        if !self.vault_unlocked() {
+            self.unlock_vault(session.did.as_bytes())?;
+        }
         *self.session.lock().expect("session mutex") = session.clone();
         self.mid_active
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1501,11 +1575,8 @@ impl DeputyService {
     /// Fetch, verify, and seal the source's dependencies into the dirty store. (capability: WRITE)
     pub fn acquire(&self, source: &str) -> Result<AcquireReport, ApiError> {
         self.authorize_op(Ops::WRITE)?;
-        Ok(acquire(
-            &self.vault,
-            &self.ecosystem,
-            &SourceId::new(source),
-        )?)
+        let vault = self.vault()?;
+        Ok(acquire(&vault, &self.ecosystem, &SourceId::new(source))?)
     }
 
     /// Language analytics + critical-point-of-failure scoring. (capability: READ)
@@ -1524,20 +1595,22 @@ impl DeputyService {
                 )
             })
             .collect();
+        let vault = self.vault()?;
         Ok(analyze(&lock, |name, version| {
             let hash = hashes.get(&(name.to_owned(), version.to_owned()))?;
-            self.vault.get_artifact(StoreKind::Dirty, hash).ok()
+            vault.get_artifact(StoreKind::Dirty, hash).ok()
         })?)
     }
 
     /// Scan every dependency, recording verdicts. (capability: WRITE)
     pub fn scan(&self, source: &str) -> Result<Vec<ScanReport>, ApiError> {
         self.authorize_op(Ops::WRITE)?;
+        let vault = self.vault()?;
         self.pins(source)?
             .iter()
             .map(|pin| {
                 scan(
-                    &self.vault,
+                    &vault,
                     pin,
                     &self.advisories.read().expect("advisories lock"),
                 )
@@ -1549,13 +1622,14 @@ impl DeputyService {
     /// Promote scanned-clean dependencies into prod. (capability: WRITE)
     pub fn promote(&self, source: &str) -> Result<Vec<Promotion>, ApiError> {
         self.authorize_op(Ops::WRITE)?;
+        let vault = self.vault()?;
         let did = self.session().did;
         let outcomes = self
             .pins(source)?
             .iter()
             .filter_map(|pin| {
                 promote(
-                    &self.vault,
+                    &vault,
                     pin.dep.ecosystem,
                     pin.dep.name.as_str(),
                     pin.dep.version.as_str(),
@@ -1571,16 +1645,18 @@ impl DeputyService {
     /// Run the fail-closed deploy gate over the source's dependencies. (capability: READ)
     pub fn gate(&self, source: &str) -> Result<GateDecision, ApiError> {
         self.authorize_op(Ops::READ)?;
-        Ok(gate(&self.vault, &self.pins(source)?)?)
+        let vault = self.vault()?;
+        Ok(gate(&vault, &self.pins(source)?)?)
     }
 
     /// Gate, then vendor prod copies into `into`. (capability: WRITE)
     pub fn deploy(&self, source: &str, into: &str) -> Result<MaterializePlan, ApiError> {
         self.authorize_op(Ops::WRITE)?;
+        let vault = self.vault()?;
         let pins = self.pins(source)?;
-        match gate(&self.vault, &pins)? {
+        match gate(&vault, &pins)? {
             GateDecision::Blocked { violations } => Err(ApiError::gate_blocked(violations)),
-            GateDecision::Allowed { .. } => Ok(materialize(&self.vault, &pins, Path::new(into))?),
+            GateDecision::Allowed { .. } => Ok(materialize(&vault, &pins, Path::new(into))?),
         }
     }
 }

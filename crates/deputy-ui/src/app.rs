@@ -1,4 +1,4 @@
-//! The Dioxus single-page app (wasm32 only). A thin client of the Deputy API.
+//! The Dioxus single-page app (web + desktop). A thin client of the Deputy API.
 //!
 //! Flow: an **mID login landing page** gates the app; once signed in, a left **sidebar** selects
 //! tabs. The **GitHub** tab connects a PAT, lists your repositories, lets you select some, name a
@@ -209,24 +209,32 @@ struct DepAnalytics {
     unsafe_crates: usize,
 }
 
-// ── API client (browser fetch via gloo-net) ──────────────────────────────────
+// ── API client ───────────────────────────────────────────────────────────────
+//
+// Same `get_json`/`post_json` surface on both platforms; the transport differs because desktop
+// is native (no browser fetch): web uses gloo-net (the browser's fetch), desktop uses reqwest.
 
+/// Pull `{"error": "..."}` out of a non-2xx JSON body, else a generic status string.
+fn err_from_body(status: u16, body: Option<serde_json::Value>) -> String {
+    body.and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+        .unwrap_or_else(|| format!("HTTP {status}"))
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn read_json<T: for<'de> Deserialize<'de>>(
     resp: gloo_net::http::Response,
 ) -> Result<T, String> {
     if !resp.ok() {
         let status = resp.status();
-        let msg = resp
-            .json::<serde_json::Value>()
-            .await
-            .ok()
-            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
-            .unwrap_or_else(|| format!("HTTP {status}"));
-        return Err(msg);
+        return Err(err_from_body(
+            status,
+            resp.json::<serde_json::Value>().await.ok(),
+        ));
     }
     resp.json::<T>().await.map_err(|e| e.to_string())
 }
 
+#[cfg(target_arch = "wasm32")]
 async fn get_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
     let resp = gloo_net::http::Request::get(&format!("{API_BASE}{path}"))
         .send()
@@ -235,6 +243,7 @@ async fn get_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String>
     read_json(resp).await
 }
 
+#[cfg(target_arch = "wasm32")]
 async fn post_json<T: for<'de> Deserialize<'de>>(
     path: &str,
     body: &serde_json::Value,
@@ -246,6 +255,50 @@ async fn post_json<T: for<'de> Deserialize<'de>>(
         .await
         .map_err(|e| e.to_string())?;
     read_json(resp).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn read_json<T: for<'de> Deserialize<'de>>(resp: reqwest::Response) -> Result<T, String> {
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        return Err(err_from_body(
+            status,
+            resp.json::<serde_json::Value>().await.ok(),
+        ));
+    }
+    resp.json::<T>().await.map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn get_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
+    let resp = reqwest::Client::new()
+        .get(format!("{API_BASE}{path}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    read_json(resp).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn post_json<T: for<'de> Deserialize<'de>>(
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<T, String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{API_BASE}{path}"))
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    read_json(resp).await
+}
+
+/// Cross-platform async sleep — browser timers on web, tokio on desktop.
+async fn sleep_ms(ms: u32) {
+    #[cfg(target_arch = "wasm32")]
+    gloo_timers::future::TimeoutFuture::new(ms).await;
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
 }
 
 /// Ask the **MATA Sovereign ID browser extension** to sign the challenge and return a wallet
@@ -283,7 +336,7 @@ async fn request_mid_token(rp_origin: &str, nonce: &str) -> Result<String, Strin
             done = true;
             window.removeEventListener("message", onMsg);
             const r = d.result || {{}};
-            console.log("[Deputy mID] sign_in_response", r.outcome);
+            console.log("[Deputy mID] sign_in_response", JSON.stringify(r));
             if (r.outcome === "ok") resolve({{ ok: true, token: r.jwt }});
             else if (r.outcome === "denied") resolve({{ ok: false, error: "You denied the sign-in request in the MATA extension." }});
             else resolve({{ ok: false, error: r.message || ("sign-in error: " + (r.error_code || "unknown")) }});
@@ -693,7 +746,7 @@ fn GitHubTab() -> Element {
                                         if let Ok(p) = get_json::<Option<ProgressView>>("/github/download/progress").await {
                                             progress.set(p);
                                         }
-                                        gloo_timers::future::TimeoutFuture::new(400).await;
+                                        sleep_ms(400).await;
                                     }
                                     progress.set(None);
                                 });
@@ -1141,10 +1194,9 @@ fn CoverageView(report: CoverageReport) -> Element {
 // ── Dep Analytics tab: pick an infrastructure, break dependencies down by language ────────────
 
 fn pct(part: usize, total: usize) -> usize {
-    if total == 0 {
-        0
-    } else {
-        (part * 100 / total).max(if part > 0 { 1 } else { 0 })
+    match (part * 100).checked_div(total) {
+        Some(p) if part > 0 => p.max(1),
+        _ => 0,
     }
 }
 

@@ -1,5 +1,7 @@
-# Dioxus CLI config. Run the UI with:  dx serve --platform web
-# (start the Deputy API first:  deputy serve)
+# Dioxus CLI config. Run the UI with one of:
+#   dx serve --platform web       (browser, WASM)
+#   dx serve --platform desktop   (native window)
+# Start the Deputy API first:  deputy serve
 [application]
 name = "deputy-ui"
 

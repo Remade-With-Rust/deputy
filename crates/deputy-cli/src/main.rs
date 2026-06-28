@@ -783,7 +783,8 @@ fn open_or_create_vault(dir: &Path, passphrase: &[u8]) -> Result<Vault, StoreErr
 }
 
 fn default_vault_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".deputy"))
+    // Cross-platform `<home>/.deputy` (+ `$DEPUTY_VAULT` override), shared with the desktop app.
+    deputy_api::default_vault_dir()
 }
 
 fn fail(message: &str) -> ExitCode {

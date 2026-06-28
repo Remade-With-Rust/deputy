@@ -1,23 +1,39 @@
 [package]
 name = "deputy-ui"
-description = "Dioxus web app — a pure HTTP client of the Deputy API."
+description = "Dioxus app (web + desktop) — a thin client of the Deputy API."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# A Dioxus wasm application, not a reusable library — not published to crates.io.
+# A Dioxus application binary, not a reusable library — not published to crates.io.
 publish = false
 
-[dependencies]
+[features]
+# Pick a platform at build time. `dx serve --platform web` enables `web`;
+# `dx serve --platform desktop` (or `cargo run --features desktop`) enables `desktop`.
+web = ["dioxus/web"]
+desktop = ["dioxus/desktop", "dep:reqwest", "dep:tokio", "dep:deputy-api"]
 
-# Browser-only deps: the Dioxus web renderer + a wasm fetch client. Gated to wasm32 so the
-# crate still compiles trivially on the host (cargo build --workspace / clippy), where it is
-# just a stub `main` (src/main.rs). Build/run the real app with: dx serve --platform web.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-dioxus = { version = "0.7", features = ["web"] }
-gloo-net = { version = "0.6", features = ["json"] }
-gloo-timers = { version = "0.3", features = ["futures"] }
+[dependencies]
+dioxus = { version = "0.7" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Desktop (native) only — pulled in by the `desktop` feature. The browser's fetch and timers
+# don't exist on native, so reqwest is the HTTP client and tokio provides async sleep.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+], optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
+# The embedded API + vault — the desktop app is self-contained (no separate `deputy serve`).
+deputy-api = { path = "../deputy-api", version = "0.1.0", optional = true }
+
+# Browser (wasm32) only — the web renderer's fetch + timer shims. Gated to wasm32 so the crate
+# still compiles trivially on the host (where, without a platform feature, it is just a stub
+# `main`). Build/run the web app with: dx serve --platform web.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = { version = "0.6", features = ["json"] }
+gloo-timers = { version = "0.3", features = ["futures"] }

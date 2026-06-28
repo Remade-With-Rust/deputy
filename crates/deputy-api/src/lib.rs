@@ -30,7 +30,36 @@ pub use deputy_id::{verify, Session, VerifyParams};
 pub use spacedb_access::{Capability, Did, Identity, Ops, Scope, SignedCapability};
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Deputy's default vault directory (`<home>/.deputy`), resolved cross-platform.
+///
+/// Honors `$DEPUTY_VAULT` first; otherwise the platform home — `$HOME` on Unix, falling back to
+/// `%USERPROFILE%` / `%APPDATA%` on Windows. Returns `None` only when none are set (pass an
+/// explicit path then).
+pub fn default_vault_dir() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("DEPUTY_VAULT") {
+        return Some(PathBuf::from(explicit));
+    }
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .or_else(|| std::env::var_os("APPDATA"))
+        .map(|home| PathBuf::from(home).join(".deputy"))
+}
+
+/// Open a **local-identity** service at `dir`, creating the vault on first run (mID deactivated).
+/// One-call convenience for embedding the API — e.g. the self-contained desktop app — so callers
+/// don't need to depend on `deputy-store` directly. Access is gated by the passphrase.
+pub fn open_or_create_local(dir: &Path, passphrase: &[u8]) -> Result<DeputyService, ApiError> {
+    // `create` returns `AlreadyInitialized` cheaply (no Argon2) when the vault exists, so this is
+    // a fresh derive only on first run; `open_local` then unlocks it.
+    match deputy_store::Vault::create(dir, passphrase) {
+        Ok(_) | Err(deputy_store::StoreError::AlreadyInitialized) => {}
+        Err(e) => return Err(ApiError::bad_request(format!("opening vault: {e}"))),
+    }
+    DeputyService::open_local(dir, passphrase)
+}
 
 /// Serve the API on `addr`. Bind to loopback (e.g. `127.0.0.1`) — this is a personal,
 /// local-only tool and must never be exposed to the network by default.

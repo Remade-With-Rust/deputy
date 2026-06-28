@@ -769,11 +769,51 @@ fn NavItem(tab: Signal<Tab>, this: Tab, label: String) -> Element {
 
 // ── GitHub tab: connect, select repos, name a folder, download + analyze ──────
 
+/// Folder chooser for local ingestion. Desktop opens a **native folder picker**; web falls back to
+/// a text field (a browser can't hand back a path the server can resolve).
+#[cfg(not(target_arch = "wasm32"))]
+fn folder_picker(local_path: Signal<String>) -> Element {
+    rsx! {
+        button {
+            class: "gh",
+            onclick: move |_| {
+                let mut local_path = local_path;
+                // Native picker runs async so it doesn't block the UI event loop.
+                spawn(async move {
+                    if let Some(handle) = rfd::AsyncFileDialog::new().pick_folder().await {
+                        local_path.set(handle.path().display().to_string());
+                    }
+                });
+            },
+            "Choose folder…"
+        }
+        span { class: "muted local-chosen",
+            {if local_path().trim().is_empty() {
+                "no folder chosen".to_string()
+            } else {
+                local_path()
+            }}
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn folder_picker(mut local_path: Signal<String>) -> Element {
+    rsx! {
+        input {
+            class: "acct-label local-path",
+            value: "{local_path}",
+            oninput: move |e| local_path.set(e.value()),
+            placeholder: "local folder path (e.g. /Users/you/code)",
+        }
+    }
+}
+
 #[component]
 fn GitHubTab() -> Element {
     let mut token = use_signal(String::new);
     let mut owner = use_signal(String::new);
-    let mut local_path = use_signal(String::new);
+    let local_path = use_signal(String::new);
     let mut local_folder = use_signal(String::new);
     let mut hide_forks = use_signal(|| true);
     let mut connections = use_signal(Vec::<String>::new);
@@ -902,12 +942,7 @@ fn GitHubTab() -> Element {
                 "its dependency source is pulled into the vault — no GitHub or PAT needed."
             }
             div { class: "gh-connect",
-                input {
-                    class: "acct-label local-path",
-                    value: "{local_path}",
-                    oninput: move |e| local_path.set(e.value()),
-                    placeholder: "local folder path (e.g. /Users/you/code)",
-                }
+                {folder_picker(local_path)}
                 input {
                     class: "acct-label",
                     value: "{local_folder}",
@@ -1936,6 +1971,7 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: #8b5cf6; cursor:
 .gh-hint { font-size: 13px; }
 .local-head { margin-top: 28px; border-top: 1px solid #2a2f3a; padding-top: 18px; }
 .local-path { max-width: 380px; flex: 1; }
+.local-chosen { align-self: center; word-break: break-all; }
 
 .repolist { list-style: none; padding: 0; margin: 12px 0; }
 .repo-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid #2a2f3a; }

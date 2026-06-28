@@ -14,7 +14,14 @@ publish = false
 # Pick a platform at build time. `dx serve --platform web` enables `web`;
 # `dx serve --platform desktop` (or `cargo run --features desktop`) enables `desktop`.
 web = ["dioxus/web"]
-desktop = ["dioxus/desktop", "dep:reqwest", "dep:tokio", "dep:deputy-api", "dep:base64"]
+desktop = [
+    "dioxus/desktop",
+    "dep:reqwest",
+    "dep:tokio",
+    "dep:deputy-api",
+    "dep:base64",
+    "dep:rfd",
+]
 
 [dependencies]
 dioxus = { version = "0.7" }
@@ -32,6 +39,8 @@ tokio = { version = "1", features = ["time"], optional = true }
 # The embedded API + vault — the desktop app is self-contained (no separate `deputy serve`).
 deputy-api = { path = "../deputy-api", version = "0.1.0", optional = true }
 base64 = { version = "0.22", optional = true }
+# Native folder picker for local-folder ingestion (desktop only).
+rfd = { version = "0.15", optional = true }
 
 # Browser (wasm32) only — the web renderer's fetch + timer shims. Gated to wasm32 so the crate
 # still compiles trivially on the host (where, without a platform feature, it is just a stub

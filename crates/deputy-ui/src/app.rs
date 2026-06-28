@@ -12,8 +12,21 @@ use serde::Deserialize;
 
 const API_BASE: &str = "http://127.0.0.1:7878";
 
+#[cfg(target_arch = "wasm32")]
 pub fn launch() {
     dioxus::launch(App);
+}
+
+/// Desktop launch — a normal window (NOT always-on-top, so it doesn't sit over your other apps).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn launch() {
+    use dioxus::desktop::{Config, WindowBuilder};
+    let window = WindowBuilder::new()
+        .with_title("Deputy")
+        .with_always_on_top(false);
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(Config::new().with_window(window))
+        .launch(App);
 }
 
 // ── API response types (mirror the deputy-api JSON) ──────────────────────────
@@ -403,50 +416,62 @@ async fn run_mid_signin(origin: String, nonce: String) -> Result<Session, String
 async fn run_mid_signin(_origin: String, nonce: String) -> Result<Session, String> {
     // Launch the MATA native app via `mata-mid://`; its response returns to the embedded API's
     // /auth/callback page, which POSTs the token to /auth/verify and flips `mid_active`.
-    launch_mata_deeplink(&nonce).await;
-    // Poll the embedded API until the callback has completed sign-in (~2 min budget).
-    for _ in 0..120 {
+    eprintln!(
+        "[Deputy mID] native sign-in start (nonce {})",
+        &nonce[..nonce.len().min(8)]
+    );
+    launch_mata_deeplink(&nonce);
+    eprintln!("[Deputy mID] waiting for MATA to sign + call back (polling /health)…");
+    // Give up after ~20s if MATA never responds (e.g. not installed / not the default handler).
+    for i in 0..20 {
         sleep_ms(1000).await;
-        if let Ok(s) = get_json::<Session>("/health").await {
-            if s.mid_active {
+        match get_json::<Session>("/health").await {
+            Ok(s) if s.mid_active => {
+                eprintln!("[Deputy mID] ✓ signed in as {}", s.did);
                 return Ok(s);
             }
+            Ok(_) => {
+                if i % 5 == 0 {
+                    eprintln!("[Deputy mID] …still waiting ({i}s)");
+                }
+            }
+            Err(e) => eprintln!("[Deputy mID] poll error: {e}"),
         }
     }
-    Err("Timed out waiting for MATA sign-in — is the MATA app installed?".to_owned())
+    Err("Timed out waiting for MATA sign-in — is the MATA app installed + registered for mata-mid://?".to_owned())
 }
 
-/// Build and dispatch the `mata-mid://request` deep link (ADR 0005 native surface). The native
-/// MATA app reads the base64url payload, signs, and returns to our embedded `/auth/callback`.
+/// Build the `mata-mid://request` deep link (ADR 0005 native surface) and hand it to the OS URL
+/// handler, which launches the registered MATA native app. The app reads the base64url payload,
+/// signs, and returns to our embedded `/auth/callback`. Logs to the terminal so the whole hop is
+/// watchable — unlike the webview, which can't reliably dispatch a custom scheme.
 #[cfg(not(target_arch = "wasm32"))]
-async fn launch_mata_deeplink(nonce: &str) {
-    let non = serde_json::to_string(nonce).unwrap_or_else(|_| "\"\"".to_owned());
-    let callback = serde_json::to_string(&format!("{API_BASE}/auth/callback"))
-        .unwrap_or_else(|_| "\"\"".to_owned());
-    let rp = serde_json::to_string(API_BASE).unwrap_or_else(|_| "\"\"".to_owned());
-    let script = format!(
-        r#"
-        var payload = {{
-          version: 1,
-          request_id: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Math.random()),
-          rp_origin: {rp},
-          nonce: {non},
-          claims: {{ required: ["did"], optional: [], custom: {{}} }},
-          callback: {callback}
-        }};
-        function b64url(s){{var b=btoa(unescape(encodeURIComponent(s)));return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}}
-        var url = "mata-mid://request?payload=" + b64url(JSON.stringify(payload));
-        console.log("[Deputy mID] launching native app:", url);
-        // Fire the custom scheme via a hidden iframe so the OS handles it WITHOUT navigating the
-        // Deputy webview away from itself (which would blank the UI mid sign-in).
-        var f = document.createElement('iframe');
-        f.style.display = 'none';
-        f.src = url;
-        document.body.appendChild(f);
-        setTimeout(function(){{ try {{ document.body.removeChild(f); }} catch(e) {{}} }}, 1500);
-        "#
-    );
-    let _ = dioxus::document::eval(&script).await;
+fn launch_mata_deeplink(nonce: &str) {
+    use base64::Engine;
+    let payload = serde_json::json!({
+        "version": 1,
+        "request_id": format!("deputy-{nonce}"),
+        "rp_origin": API_BASE,
+        "nonce": nonce,
+        "claims": { "required": ["did"], "optional": [], "custom": {} },
+        "callback": format!("{API_BASE}/auth/callback"),
+    });
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string());
+    let url = format!("mata-mid://request?payload={b64}");
+    eprintln!("[Deputy mID] launching deep-link → {url}");
+    let spawn = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(&url).spawn()
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(&url).spawn()
+    };
+    match spawn {
+        Ok(_) => eprintln!("[Deputy mID] OS launcher invoked — the MATA app should open now"),
+        Err(e) => eprintln!("[Deputy mID] FAILED to launch deep-link: {e}"),
+    }
 }
 
 // ── Root: the mID auth gate ───────────────────────────────────────────────────

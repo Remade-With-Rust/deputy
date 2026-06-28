@@ -209,7 +209,16 @@ function b64url(s){s=s.replace(/-/g,'+').replace(/_/g,'/');var p=s.length%4;if(p
   fetch('/auth/verify',{method:'POST',headers:{'content-type':'application/json'},
     body:JSON.stringify({token:r.jwt,nonce:payload.nonce,audience:payload.aud})})
    .then(function(res){return res.json().then(function(j){return {ok:res.ok,j:j};});})
-   .then(function(o){msg.textContent=o.ok?'✓ Signed in — you can return to Deputy.':'Verification failed: '+(o.j.error||'unknown');})
+   .then(function(o){
+     if(o.ok){
+       msg.textContent='✓ Signed in — returning to Deputy…';
+       // Deputy's window auto-advances on its next /health poll; close this tab so focus
+       // returns to the app (best-effort — browsers may block closing a non-script tab).
+       setTimeout(function(){ try{ window.close(); }catch(e){} }, 700);
+     } else {
+       msg.textContent='Verification failed: '+(o.j.error||'unknown')+'. Return to Deputy and click Sign in again.';
+     }
+   })
    .catch(function(e){msg.textContent='Verification error: '+e;});
 })();
 </script></body></html>"#;

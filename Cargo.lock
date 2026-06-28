@@ -1364,6 +1364,7 @@ dependencies = [
 name = "deputy-ui"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "deputy-api",
  "dioxus",
  "gloo-net",

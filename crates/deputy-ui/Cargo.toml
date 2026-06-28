@@ -26,6 +26,7 @@ serde_json = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
+    "blocking",
 ], optional = true }
 tokio = { version = "1", features = ["time"], optional = true }
 # The embedded API + vault — the desktop app is self-contained (no separate `deputy serve`).

@@ -17,16 +17,80 @@ pub fn launch() {
     dioxus::launch(App);
 }
 
-/// Desktop launch — a normal window (NOT always-on-top, so it doesn't sit over your other apps).
+/// Desktop launch — a normal window (NOT always-on-top), plus a runtime `deputy://` deep-link
+/// handler so the mID sign-in callback returns straight into the app with no browser hop.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn launch() {
     use dioxus::desktop::{Config, WindowBuilder};
     let window = WindowBuilder::new()
         .with_title("Deputy")
         .with_always_on_top(false);
-    dioxus::LaunchBuilder::desktop()
-        .with_cfg(Config::new().with_window(window))
-        .launch(App);
+    let cfg = Config::new()
+        .with_window(window)
+        .with_custom_event_handler(|event, _target| {
+            if let dioxus::desktop::tao::event::Event::Opened { urls } = event {
+                for url in urls {
+                    let s = url.as_str();
+                    if s.starts_with("deputy://") {
+                        eprintln!("[Deputy mID] runtime deep-link: {s}");
+                        handle_mid_callback(s);
+                    }
+                }
+            }
+        });
+    dioxus::LaunchBuilder::desktop().with_cfg(cfg).launch(App);
+}
+
+/// Parse a `deputy://mid-callback#mid_response=<base64url>` deep link, pull the wallet token out,
+/// and POST it to the embedded API's `/auth/verify` — completing sign-in with **no browser**.
+/// Shared by the runtime `Event::Opened` handler and the cold-start argv path in `main.rs`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn handle_mid_callback(url: &str) {
+    use base64::Engine;
+    let dec = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let Some(frag) = url.split('#').nth(1) else {
+        return;
+    };
+    let Some(enc) = frag.split('&').find_map(|kv| kv.strip_prefix("mid_response=")) else {
+        return;
+    };
+    let Ok(json_bytes) = dec.decode(enc) else {
+        eprintln!("[Deputy mID] callback: malformed mid_response");
+        return;
+    };
+    let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&json_bytes) else {
+        return;
+    };
+    let result = resp.get("result").cloned().unwrap_or(serde_json::Value::Null);
+    if result.get("outcome").and_then(|o| o.as_str()) != Some("ok") {
+        eprintln!("[Deputy mID] callback outcome not ok");
+        return;
+    }
+    let Some(jwt) = result.get("jwt").and_then(|j| j.as_str()).map(String::from) else {
+        return;
+    };
+    // Pull nonce + aud out of the JWT payload so /auth/verify consumes the matching nonce.
+    let (nonce, aud) = jwt
+        .split('.')
+        .nth(1)
+        .and_then(|p| dec.decode(p).ok())
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .map(|p| {
+            (
+                p.get("nonce").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
+                p.get("aud").and_then(|a| a.as_str()).unwrap_or_default().to_string(),
+            )
+        })
+        .unwrap_or_default();
+    let body = serde_json::json!({ "token": jwt, "nonce": nonce, "audience": aud });
+    match reqwest::blocking::Client::new()
+        .post(format!("{API_BASE}/auth/verify"))
+        .json(&body)
+        .send()
+    {
+        Ok(r) => eprintln!("[Deputy mID] callback verify → HTTP {}", r.status()),
+        Err(e) => eprintln!("[Deputy mID] callback verify error: {e}"),
+    }
 }
 
 // ── API response types (mirror the deputy-api JSON) ──────────────────────────
@@ -443,8 +507,8 @@ async fn run_mid_signin(_origin: String, nonce: String) -> Result<Session, Strin
 
 /// Build the `mata-mid://request` deep link (ADR 0005 native surface) and hand it to the OS URL
 /// handler, which launches the registered MATA native app. The app reads the base64url payload,
-/// signs, and returns to our embedded `/auth/callback`. Logs to the terminal so the whole hop is
-/// watchable — unlike the webview, which can't reliably dispatch a custom scheme.
+/// signs, and returns the result via our `deputy://mid-callback` scheme (handled natively by
+/// `handle_mid_callback` — no browser). Logs to the terminal so the whole hop is watchable.
 #[cfg(not(target_arch = "wasm32"))]
 fn launch_mata_deeplink(nonce: &str) {
     use base64::Engine;
@@ -454,7 +518,9 @@ fn launch_mata_deeplink(nonce: &str) {
         "rp_origin": API_BASE,
         "nonce": nonce,
         "claims": { "required": ["did"], "optional": [], "custom": {} },
-        "callback": format!("{API_BASE}/auth/callback"),
+        // Return straight into the app via the `deputy://` scheme — the OS routes it to our
+        // native handler (app::handle_mid_callback), so there is no browser hop at all.
+        "callback": "deputy://mid-callback",
     });
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string());
     let url = format!("mata-mid://request?payload={b64}");

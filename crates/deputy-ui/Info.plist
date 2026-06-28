@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist for the Deputy desktop binary.
+
+  In dev (`cargo run --features desktop`) this is embedded into the Mach-O via the
+  __TEXT,__info_plist section by build.rs's -sectcreate linker arg. `dx bundle` writes a
+  separate Contents/Info.plist from Dioxus.toml; the keys match so behaviour is the same.
+
+  The CFBundleURLTypes block registers the `deputy://` scheme so the OS routes the mID
+  sign-in callback (deputy://mid-callback#mid_response=...) straight back to this app — no
+  browser hop. See crates/deputy-ui/src/app.rs::handle_mid_callback.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>rust.remade.deputy</string>
+    <key>CFBundleName</key>
+    <string>Deputy</string>
+    <key>CFBundleExecutable</key>
+    <string>deputy-ui</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>rust.remade.deputy.mid</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>deputy</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

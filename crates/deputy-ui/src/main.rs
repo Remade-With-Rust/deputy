@@ -28,6 +28,16 @@ fn main() {
 // `deputy serve` needed. `dioxus::launch` opens a desktop window because `dioxus/desktop` is on.
 #[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
 fn main() {
+    // Deep-link entry: if the OS launched us with a `deputy://mid-callback#...` URL (the mID
+    // sign-in result) and an instance is already running, just forward the token to its embedded
+    // API and exit — don't start a second window or try to re-bind the API port. When the app is
+    // already running, the OS instead delivers this URL as a runtime `Event::Opened` (handled in
+    // app::launch), so this branch only fires for a cold launch from the deep link.
+    if let Some(url) = std::env::args().nth(1).filter(|a| a.starts_with("deputy://")) {
+        eprintln!("deputy-ui: forwarding mID callback to the running instance");
+        app::handle_mid_callback(&url);
+        return;
+    }
     let dir = match deputy_api::default_vault_dir() {
         Some(d) => d,
         None => {

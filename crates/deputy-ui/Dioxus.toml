@@ -1,9 +1,19 @@
 # Dioxus CLI config. Run the UI with one of:
 #   dx serve --platform web       (browser, WASM)
-#   dx serve --platform desktop   (native window)
-# Start the Deputy API first:  deputy serve
+#   dx serve --platform desktop   (native window — registers the deputy:// scheme)
+# The desktop app embeds the API; the web app needs `deputy serve` running.
 [application]
 name = "deputy-ui"
 
 [web.app]
 title = "Deputy"
+
+[bundle]
+identifier = "rust.remade.deputy"
+
+# Register the `deputy://` URL scheme so the OS routes the mID sign-in callback
+# (deputy://mid-callback#mid_response=...) back to the app with no browser hop. Mirrors
+# crates/deputy-ui/Info.plist (used by the `cargo run` Mach-O path).
+[[macos.plist.CFBundleURLTypes]]
+CFBundleURLName = "rust.remade.deputy.mid"
+CFBundleURLSchemes = ["deputy"]

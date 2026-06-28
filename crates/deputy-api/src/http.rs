@@ -457,7 +457,7 @@ async fn folder_scan(
     State(svc): AppState,
     Json(req): Json<ScanFolder>,
 ) -> Result<Json<FolderScanReport>, ApiError> {
-    Ok(Json(svc.scan_folder(req.name).await?))
+    Ok(Json(svc.scan_folder(req.name)?))
 }
 
 async fn folder_analytics(
@@ -478,7 +478,7 @@ async fn folder_coverage(
     State(svc): AppState,
     Json(req): Json<AnalyticsRequest>,
 ) -> Result<Json<CoverageReport>, ApiError> {
-    Ok(Json(svc.folder_coverage(req.name).await?))
+    Ok(Json(svc.folder_coverage(req.name)?))
 }
 
 async fn folder_heartbeat(

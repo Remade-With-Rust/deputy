@@ -358,12 +358,14 @@ async fn fetch_lockfile_any(
 }
 
 /// One project staged for acquisition (from a GitHub repo or a local folder): its display name,
-/// whether a lockfile was found, any fetch/read error, and the pins parsed from its `Cargo.lock`.
+/// whether a lockfile was found, any fetch/read error, the pins parsed from its `Cargo.lock`, and
+/// the raw lockfile text (kept so folder ops can re-parse it offline instead of re-fetching).
 struct StagedRepo {
     repo: String,
     lockfile_found: bool,
     fetch_error: Option<String>,
     pins: Vec<Pin>,
+    lockfile_text: Option<String>,
 }
 
 /// Recursively collect every `Cargo.lock` under `root` (skipping `target/` and dotdirs) so a local
@@ -505,9 +507,13 @@ pub struct DeputyService {
     /// only — never written to the vault or logged.
     github_connections: std::sync::Mutex<Vec<GhConnection>>,
 
-    /// Named folders grouping downloaded repositories. In-memory for this session (persistence
-    /// to the vault is a follow-up).
+    /// Named folders grouping downloaded repositories. Persisted to the encrypted vault.
     folders: std::sync::Mutex<HashMap<String, FolderSummary>>,
+
+    /// Each folder's raw `Cargo.lock` texts as `(project, text)`, captured at download. Lets folder
+    /// ops (analytics/scan/coverage/heartbeat) re-parse offline instead of re-fetching from GitHub
+    /// — which is what made them fail for local folders. Persisted to the encrypted vault.
+    folder_lockfiles: std::sync::Mutex<HashMap<String, Vec<(String, String)>>>,
 
     /// Cached dependency-language analytics per folder — downloading + inspecting every crate is
     /// expensive, so it's computed lazily and invalidated on re-download / delete.
@@ -579,6 +585,7 @@ impl DeputyService {
         // the vault), so they survive app restarts instead of resetting every launch.
         let github_connections = Self::load_github_connections(&vault);
         let folders = Self::load_folders(&vault);
+        let folder_lockfiles = Self::load_folder_lockfiles(&vault);
 
         Ok(Self {
             vault,
@@ -594,6 +601,7 @@ impl DeputyService {
             mid_active: std::sync::atomic::AtomicBool::new(mid_active),
             github_connections: std::sync::Mutex::new(github_connections),
             folders: std::sync::Mutex::new(folders),
+            folder_lockfiles: std::sync::Mutex::new(folder_lockfiles),
             analytics_cache: std::sync::Mutex::new(HashMap::new()),
             download_progress: std::sync::Mutex::new(None),
         })
@@ -646,6 +654,37 @@ impl DeputyService {
         if let Ok(json) = serde_json::to_vec(&snapshot) {
             let _ = self.vault.put_app_state("folders", &json);
         }
+    }
+
+    fn load_folder_lockfiles(vault: &Vault) -> HashMap<String, Vec<(String, String)>> {
+        vault
+            .get_app_state("folder_lockfiles")
+            .ok()
+            .flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    /// Write the current per-folder lockfiles back to the encrypted vault (best-effort).
+    fn persist_folder_lockfiles(&self) {
+        let snapshot = self
+            .folder_lockfiles
+            .lock()
+            .expect("folder lockfiles mutex")
+            .clone();
+        if let Ok(json) = serde_json::to_vec(&snapshot) {
+            let _ = self.vault.put_app_state("folder_lockfiles", &json);
+        }
+    }
+
+    /// The stored `(project, lockfile text)` pairs for a folder, or an error if the folder is gone.
+    fn stored_lockfiles(&self, name: &str) -> Result<Vec<(String, String)>, ApiError> {
+        self.folder_lockfiles
+            .lock()
+            .expect("folder lockfiles mutex")
+            .get(name)
+            .cloned()
+            .ok_or_else(|| ApiError::bad_request(format!("no such folder: {name}")))
     }
 
     /// Attach an advisory database used by [`DeputyService::scan`].
@@ -780,6 +819,7 @@ impl DeputyService {
                         lockfile_found: true,
                         fetch_error: None,
                         pins,
+                        lockfile_text: Some(text),
                     });
                 }
                 Ok(None) => staged.push(StagedRepo {
@@ -787,12 +827,14 @@ impl DeputyService {
                     lockfile_found: false,
                     fetch_error: None,
                     pins: vec![],
+                    lockfile_text: None,
                 }),
                 Err(e) => staged.push(StagedRepo {
                     repo,
                     lockfile_found: false,
                     fetch_error: Some(e),
                     pins: vec![],
+                    lockfile_text: None,
                 }),
             }
         }
@@ -841,6 +883,7 @@ impl DeputyService {
                         lockfile_found: true,
                         fetch_error: None,
                         pins,
+                        lockfile_text: Some(text),
                     });
                 }
                 Err(e) => staged.push(StagedRepo {
@@ -848,6 +891,7 @@ impl DeputyService {
                     lockfile_found: false,
                     fetch_error: Some(e.to_string()),
                     pins: vec![],
+                    lockfile_text: None,
                 }),
             }
         }
@@ -858,6 +902,14 @@ impl DeputyService {
     /// all projects (content-addressed, so a crate shared by several is fetched at most once),
     /// acquire the unique set once with progress, summarize per project, and persist the folder.
     fn finish_download(&self, folder: String, staged: Vec<StagedRepo>) -> FolderSummary {
+        // Keep each project's raw lockfile so folder ops (analytics/scan/coverage/heartbeat) can
+        // re-parse it offline — they no longer re-fetch from GitHub, which never worked for local
+        // folders and defeated the offline-vault purpose anyway.
+        let lockfiles: Vec<(String, String)> = staged
+            .iter()
+            .filter_map(|s| s.lockfile_text.clone().map(|t| (s.repo.clone(), t)))
+            .collect();
+
         let mut seen: HashSet<String> = HashSet::new();
         let mut unique_pins: Vec<Pin> = Vec::new();
         for s in &staged {
@@ -919,11 +971,16 @@ impl DeputyService {
             .lock()
             .expect("analytics mutex")
             .remove(&folder);
+        self.folder_lockfiles
+            .lock()
+            .expect("folder lockfiles mutex")
+            .insert(folder.clone(), lockfiles);
         self.folders
             .lock()
             .expect("folders mutex")
             .insert(folder, summary.clone());
         self.persist_folders();
+        self.persist_folder_lockfiles();
         summary
     }
 
@@ -948,11 +1005,16 @@ impl DeputyService {
     pub fn delete_folder(&self, name: &str) -> Result<(), ApiError> {
         self.authorize_op(Ops::WRITE)?;
         self.folders.lock().expect("folders mutex").remove(name);
+        self.folder_lockfiles
+            .lock()
+            .expect("folder lockfiles mutex")
+            .remove(name);
         self.analytics_cache
             .lock()
             .expect("analytics mutex")
             .remove(name);
         self.persist_folders();
+        self.persist_folder_lockfiles();
         Ok(())
     }
 
@@ -972,33 +1034,8 @@ impl DeputyService {
         {
             return Ok(cached);
         }
-        let tokens = self.github_tokens()?;
-        let repo_names: Vec<String> = {
-            let folders = self.folders.lock().expect("folders mutex");
-            match folders.get(&name) {
-                Some(f) => f.repos.iter().map(|r| r.full_name.clone()).collect(),
-                None => return Err(ApiError::bad_request(format!("no such folder: {name}"))),
-            }
-        };
-
-        // Gather the unique pins across the folder's lockfiles (a crate shared by two repos is
-        // downloaded once).
-        let client = reqwest::Client::new();
-        let mut unique: std::collections::BTreeMap<(String, String), Pin> = Default::default();
-        for repo in repo_names {
-            if let Ok(Some(text)) = fetch_lockfile_any(&client, &tokens, &repo).await {
-                if let Ok(pins) = parse_pins(&text) {
-                    for p in pins {
-                        let key = (
-                            p.dep.name.as_str().to_owned(),
-                            p.dep.version.as_str().to_owned(),
-                        );
-                        unique.insert(key, p);
-                    }
-                }
-            }
-        }
-        let pins: Vec<Pin> = unique.into_values().collect();
+        // Unique pins across the folder's stored lockfiles (offline; GitHub or local).
+        let pins = self.folder_unique_pins(&name)?;
         let total_deps = pins.len();
 
         let this = std::sync::Arc::clone(&self);
@@ -1024,31 +1061,17 @@ impl DeputyService {
         Ok(analytics)
     }
 
-    /// Re-fetch a folder's lockfiles and return the unique pins across its repos.
-    async fn folder_unique_pins(
-        &self,
-        name: &str,
-        tokens: &[String],
-        client: &reqwest::Client,
-    ) -> Result<Vec<Pin>, ApiError> {
-        let repo_names: Vec<String> = {
-            let folders = self.folders.lock().expect("folders mutex");
-            match folders.get(name) {
-                Some(f) => f.repos.iter().map(|r| r.full_name.clone()).collect(),
-                None => return Err(ApiError::bad_request(format!("no such folder: {name}"))),
-            }
-        };
+    /// The unique pins across a folder's stored lockfiles (works offline, GitHub or local).
+    fn folder_unique_pins(&self, name: &str) -> Result<Vec<Pin>, ApiError> {
         let mut unique: std::collections::BTreeMap<(String, String), Pin> = Default::default();
-        for repo in repo_names {
-            if let Ok(Some(text)) = fetch_lockfile_any(client, tokens, &repo).await {
-                if let Ok(pins) = parse_pins(&text) {
-                    for p in pins {
-                        let key = (
-                            p.dep.name.as_str().to_owned(),
-                            p.dep.version.as_str().to_owned(),
-                        );
-                        unique.insert(key, p);
-                    }
+        for (_repo, text) in self.stored_lockfiles(name)? {
+            if let Ok(pins) = parse_pins(&text) {
+                for p in pins {
+                    let key = (
+                        p.dep.name.as_str().to_owned(),
+                        p.dep.version.as_str().to_owned(),
+                    );
+                    unique.insert(key, p);
                 }
             }
         }
@@ -1059,9 +1082,8 @@ impl DeputyService {
     /// fetch the latest crates.io version and surface advisories on the pinned version.
     pub async fn folder_heartbeat(&self, name: String) -> Result<HeartbeatReport, ApiError> {
         self.authorize_op(Ops::READ)?;
-        let tokens = self.github_tokens()?;
         let client = reqwest::Client::new();
-        let pins = self.folder_unique_pins(&name, &tokens, &client).await?;
+        let pins = self.folder_unique_pins(&name)?;
 
         let mut entries = Vec::with_capacity(pins.len());
         for pin in pins {
@@ -1105,9 +1127,8 @@ impl DeputyService {
     /// already be in production (capability: WRITE).
     pub async fn scan_new_versions(&self, name: String) -> Result<NewVersionReport, ApiError> {
         self.authorize_op(Ops::WRITE)?;
-        let tokens = self.github_tokens()?;
         let client = reqwest::Client::new();
-        let pins = self.folder_unique_pins(&name, &tokens, &client).await?;
+        let pins = self.folder_unique_pins(&name)?;
 
         // Which deps have a newer published version (with its checksum, so we can stage it)?
         let mut updates: Vec<(String, String, String, String)> = Vec::new();
@@ -1173,27 +1194,15 @@ impl DeputyService {
     /// classify each dependency, and report which ones are safely sealed in the vault vs. which are
     /// gaps — missing crates.io deps (failed/never acquired), git deps, or other registries that
     /// Deputy can't content-verify. Path/workspace members (your own code) are ignored.
-    pub async fn folder_coverage(&self, name: String) -> Result<CoverageReport, ApiError> {
+    pub fn folder_coverage(&self, name: String) -> Result<CoverageReport, ApiError> {
         self.authorize_op(Ops::READ)?;
-        let tokens = self.github_tokens()?;
-        let client = reqwest::Client::new();
-        let repo_names: Vec<String> = {
-            let folders = self.folders.lock().expect("folders mutex");
-            match folders.get(&name) {
-                Some(f) => f.repos.iter().map(|r| r.full_name.clone()).collect(),
-                None => return Err(ApiError::bad_request(format!("no such folder: {name}"))),
-            }
-        };
 
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut registry_total = 0usize;
         let mut archived = 0usize;
         let mut gaps: Vec<CoverageGap> = Vec::new();
 
-        for repo in repo_names {
-            let Ok(Some(text)) = fetch_lockfile_any(&client, &tokens, &repo).await else {
-                continue;
-            };
+        for (_repo, text) in self.stored_lockfiles(&name)? {
             let Ok(lock) = toml::from_str::<RawLock>(&text) else {
                 continue;
             };
@@ -1263,9 +1272,7 @@ impl DeputyService {
         hold: Vec<(String, String)>,
     ) -> Result<usize, ApiError> {
         self.authorize_op(Ops::WRITE)?;
-        let tokens = self.github_tokens()?;
-        let client = reqwest::Client::new();
-        let pins = self.folder_unique_pins(&name, &tokens, &client).await?;
+        let pins = self.folder_unique_pins(&name)?;
         let hold: HashSet<(String, String)> = hold.into_iter().collect();
         let did = self.session().did;
         // Promote every clean, acquired dependency that the caller did NOT hold back in staging.
@@ -1308,57 +1315,21 @@ impl DeputyService {
         Ok(deps)
     }
 
-    /// Scan every repository in a folder (capability: WRITE). For each repo we re-fetch its
-    /// `Cargo.lock` and run the dependency scanner over its pins (advisory + substitution checks;
-    /// integrity is skipped for not-yet-acquired deps and noted as such).
-    pub async fn scan_folder(&self, name: String) -> Result<FolderScanReport, ApiError> {
+    /// Scan every repository in a folder (capability: WRITE), reading each project's stored
+    /// `Cargo.lock` and running the dependency scanner over its pins (advisory + substitution
+    /// checks; integrity is skipped for not-yet-acquired deps and noted as such).
+    pub fn scan_folder(&self, name: String) -> Result<FolderScanReport, ApiError> {
         self.authorize_op(Ops::WRITE)?;
-        let tokens = self.github_tokens()?;
-
-        let repo_names: Vec<String> = {
-            let folders = self.folders.lock().expect("folders mutex");
-            match folders.get(&name) {
-                Some(f) => f.repos.iter().map(|r| r.full_name.clone()).collect(),
-                None => return Err(ApiError::bad_request(format!("no such folder: {name}"))),
-            }
-        };
-
-        let client = reqwest::Client::new();
-        let mut repos = Vec::with_capacity(repo_names.len());
-        for full_name in repo_names {
-            repos.push(self.scan_repo(&client, &tokens, full_name).await);
-        }
+        let repos = self
+            .stored_lockfiles(&name)?
+            .into_iter()
+            .map(|(full_name, text)| self.scan_repo(full_name, &text))
+            .collect();
         Ok(FolderScanReport { name, repos })
     }
 
-    async fn scan_repo(
-        &self,
-        client: &reqwest::Client,
-        tokens: &[String],
-        full_name: String,
-    ) -> RepoScanResult {
-        let text = match fetch_lockfile_any(client, tokens, &full_name).await {
-            Ok(Some(t)) => t,
-            Ok(None) => {
-                return RepoScanResult {
-                    full_name,
-                    deps: 0,
-                    lockfile_found: false,
-                    findings: vec![],
-                    error: None,
-                }
-            }
-            Err(e) => {
-                return RepoScanResult {
-                    full_name,
-                    deps: 0,
-                    lockfile_found: false,
-                    findings: vec![],
-                    error: Some(e),
-                }
-            }
-        };
-        let pins = match parse_pins(&text) {
+    fn scan_repo(&self, full_name: String, text: &str) -> RepoScanResult {
+        let pins = match parse_pins(text) {
             Ok(p) => p,
             Err(e) => {
                 return RepoScanResult {

@@ -312,6 +312,9 @@ async fn sleep_ms(ms: u32) {
 ///
 /// `rp_origin` is the audience Deputy will verify the token's `aud` against (so the wallet binds
 /// the token to this relying party). It must equal Deputy's served origin (`DEPUTY_MID_AUDIENCE`).
+///
+/// Web-only: desktop has no browser extension and uses [`launch_mata_deeplink`] instead.
+#[cfg(target_arch = "wasm32")]
 async fn request_mid_token(rp_origin: &str, nonce: &str) -> Result<String, String> {
     // JSON-encode so the values land in the script as safely-quoted string literals.
     let origin = serde_json::to_string(rp_origin).unwrap_or_else(|_| "\"\"".to_owned());
@@ -386,6 +389,60 @@ async fn page_origin() -> String {
         .unwrap_or_default()
 }
 
+/// Run an mID sign-in and return the resulting session. **Web** asks the MATA browser extension to
+/// sign and verifies the token; **desktop** has no extension, so it deep-links the MATA *native*
+/// app and waits for the embedded API's `/auth/callback` to complete the verify.
+#[cfg(target_arch = "wasm32")]
+async fn run_mid_signin(origin: String, nonce: String) -> Result<Session, String> {
+    let token = request_mid_token(&origin, &nonce).await?;
+    let body = serde_json::json!({ "token": token, "nonce": nonce, "audience": origin });
+    post_json::<Session>("/auth/verify", &body).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn run_mid_signin(_origin: String, nonce: String) -> Result<Session, String> {
+    // Launch the MATA native app via `mata-mid://`; its response returns to the embedded API's
+    // /auth/callback page, which POSTs the token to /auth/verify and flips `mid_active`.
+    launch_mata_deeplink(&nonce).await;
+    // Poll the embedded API until the callback has completed sign-in (~2 min budget).
+    for _ in 0..120 {
+        sleep_ms(1000).await;
+        if let Ok(s) = get_json::<Session>("/health").await {
+            if s.mid_active {
+                return Ok(s);
+            }
+        }
+    }
+    Err("Timed out waiting for MATA sign-in — is the MATA app installed?".to_owned())
+}
+
+/// Build and dispatch the `mata-mid://request` deep link (ADR 0005 native surface). The native
+/// MATA app reads the base64url payload, signs, and returns to our embedded `/auth/callback`.
+#[cfg(not(target_arch = "wasm32"))]
+async fn launch_mata_deeplink(nonce: &str) {
+    let non = serde_json::to_string(nonce).unwrap_or_else(|_| "\"\"".to_owned());
+    let callback = serde_json::to_string(&format!("{API_BASE}/auth/callback"))
+        .unwrap_or_else(|_| "\"\"".to_owned());
+    let rp = serde_json::to_string(API_BASE).unwrap_or_else(|_| "\"\"".to_owned());
+    let script = format!(
+        r#"
+        var payload = {{
+          version: 1,
+          request_id: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Math.random()),
+          rp_origin: {rp},
+          nonce: {non},
+          claims: {{ required: ["did"], optional: [], custom: {{}} }},
+          callback: {callback}
+        }};
+        function b64url(s){{var b=btoa(unescape(encodeURIComponent(s)));return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}}
+        var url = "mata-mid://request?payload=" + b64url(JSON.stringify(payload));
+        console.log("[Deputy mID] launching native app:", url);
+        window.location.href = url;
+        "#
+    );
+    let _ = dioxus::document::eval(&script).await;
+}
+
 // ── Root: the mID auth gate ───────────────────────────────────────────────────
 
 #[component]
@@ -422,26 +479,18 @@ fn Landing(sess: Signal<Option<Session>>) -> Element {
                         busy.set(true);
                         error.set(None);
                         spawn(async move {
-                            // 1. Ask Deputy for a single-use challenge (nonce + audience).
+                            // Get a single-use challenge, then sign in via the platform's mID surface
+                            // (browser extension on web, native deep-link on desktop).
                             status.set(Some("Requesting a sign-in challenge…".to_string()));
                             let challenge = match get_json::<Challenge>("/auth/challenge").await {
                                 Ok(c) => c,
                                 Err(e) => { status.set(None); error.set(Some(format!("couldn't start sign-in — {e}"))); busy.set(false); return; }
                             };
-                            // 2. Have the MATA extension sign it. rp_origin MUST be the page's real
-                            //    origin (localhost vs 127.0.0.1) or the wallet rejects origin_mismatch.
                             let origin = page_origin().await;
-                            status.set(Some("Waiting for the MATA extension…".to_string()));
-                            let token = match request_mid_token(&origin, &challenge.nonce).await {
-                                Ok(t) => t,
-                                Err(e) => { status.set(None); error.set(Some(e)); busy.set(false); return; }
-                            };
-                            // 3. Verify the token with Deputy (against that same origin) → mID session.
-                            status.set(Some("Verifying…".to_string()));
-                            let body = serde_json::json!({ "token": token, "nonce": challenge.nonce, "audience": origin });
-                            match post_json::<Session>("/auth/verify", &body).await {
+                            status.set(Some("Waiting for MATA…".to_string()));
+                            match run_mid_signin(origin, challenge.nonce).await {
                                 Ok(s) => sess.set(Some(s)),
-                                Err(e) => error.set(Some(format!("verification failed — {e}"))),
+                                Err(e) => error.set(Some(e)),
                             }
                             status.set(None);
                             busy.set(false);

@@ -110,6 +110,7 @@ pub fn router(service: Arc<DeputyService>) -> Router {
         .route("/session", get(session))
         .route("/auth/challenge", get(auth_challenge))
         .route("/auth/verify", post(auth_verify))
+        .route("/auth/callback", get(auth_callback))
         .route("/discover", post(discover))
         .route("/acquire", post(acquire))
         .route("/analyze", post(analyze))
@@ -181,6 +182,37 @@ async fn auth_verify(
         "mid_active": svc.mid_active(),
     })))
 }
+
+/// The desktop **native deep-link** return target. The MATA native app, after signing, opens
+/// `http://127.0.0.1:<port>/auth/callback#mid_response=<base64url>`; this page reads that fragment
+/// (which the browser never sends to the server), pulls the wallet token out, and POSTs it to
+/// `/auth/verify` on this same embedded API — completing sign-in. The desktop window polls
+/// `/health` until `mid_active` flips. Loopback-only, so the page is safe to serve as-is.
+async fn auth_callback() -> axum::response::Html<&'static str> {
+    axum::response::Html(AUTH_CALLBACK_HTML)
+}
+
+const AUTH_CALLBACK_HTML: &str = r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>MATA Sovereign ID</title></head>
+<body style="font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;text-align:center;padding-top:80px">
+<h2 id="msg">Completing MATA sign-in…</h2>
+<script>
+function b64url(s){s=s.replace(/-/g,'+').replace(/_/g,'/');var p=s.length%4;if(p===2)s+='==';else if(p===3)s+='=';return decodeURIComponent(escape(atob(s)));}
+(function(){
+  var msg=document.getElementById('msg');
+  var m=/[#&]mid_response=([^&]+)/.exec(location.hash||'');
+  if(!m){msg.textContent='No sign-in response in the callback URL.';return;}
+  var resp;try{resp=JSON.parse(b64url(m[1]));}catch(e){msg.textContent='Malformed sign-in response.';return;}
+  var r=resp.result||{};
+  if(r.outcome!=='ok'||!r.jwt){msg.textContent='Sign-in '+(r.outcome||'failed')+(r.message?': '+r.message:'')+'.';return;}
+  var payload;try{payload=JSON.parse(b64url(r.jwt.split('.')[1]));}catch(e){msg.textContent='Could not read the token.';return;}
+  fetch('/auth/verify',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({token:r.jwt,nonce:payload.nonce,audience:payload.aud})})
+   .then(function(res){return res.json().then(function(j){return {ok:res.ok,j:j};});})
+   .then(function(o){msg.textContent=o.ok?'✓ Signed in — you can return to Deputy.':'Verification failed: '+(o.j.error||'unknown');})
+   .catch(function(e){msg.textContent='Verification error: '+e;});
+})();
+</script></body></html>"#;
 
 async fn session(State(svc): AppState) -> Json<Value> {
     let s = svc.session();

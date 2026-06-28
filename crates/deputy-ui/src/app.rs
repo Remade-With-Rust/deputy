@@ -437,7 +437,13 @@ async fn launch_mata_deeplink(nonce: &str) {
         function b64url(s){{var b=btoa(unescape(encodeURIComponent(s)));return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}}
         var url = "mata-mid://request?payload=" + b64url(JSON.stringify(payload));
         console.log("[Deputy mID] launching native app:", url);
-        window.location.href = url;
+        // Fire the custom scheme via a hidden iframe so the OS handles it WITHOUT navigating the
+        // Deputy webview away from itself (which would blank the UI mid sign-in).
+        var f = document.createElement('iframe');
+        f.style.display = 'none';
+        f.src = url;
+        document.body.appendChild(f);
+        setTimeout(function(){{ try {{ document.body.removeChild(f); }} catch(e) {{}} }}, 1500);
         "#
     );
     let _ = dioxus::document::eval(&script).await;

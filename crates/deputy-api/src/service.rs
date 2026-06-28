@@ -828,6 +828,7 @@ impl DeputyService {
     /// The labels of all connected GitHub accounts (capability: READ) — never the tokens.
     pub fn github_connection_labels(&self) -> Result<Vec<String>, ApiError> {
         self.authorize_op(Ops::READ)?;
+        self.vault()?; // gated: no account info before the vault is unlocked by sign-in
         Ok(self
             .github_connections
             .lock()
@@ -840,6 +841,7 @@ impl DeputyService {
     /// All connected accounts (label + token) (capability: READ), or a 400 if none are connected.
     pub(crate) fn github_connections(&self) -> Result<Vec<GhConnection>, ApiError> {
         self.authorize_op(Ops::READ)?;
+        self.vault()?; // gated
         let conns = self
             .github_connections
             .lock()
@@ -1063,6 +1065,7 @@ impl DeputyService {
     /// All named folders and their repositories (capability: READ).
     pub fn folders(&self) -> Result<Vec<FolderSummary>, ApiError> {
         self.authorize_op(Ops::READ)?;
+        self.vault()?; // gated: no folder listing before the vault is unlocked by sign-in
         Ok(self
             .folders
             .lock()

@@ -62,6 +62,18 @@ impl Vault {
         self.put_meta(key, value)
     }
 
+    /// Persist an opaque app-level blob (e.g. UI state — GitHub connections, folder groupings)
+    /// under a stable key, encrypted by the metadata collection exactly like every other record.
+    /// Keeps deputy-store decoupled from deputy-api's types: the caller owns the (de)serialization.
+    pub fn put_app_state(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.put_meta(&format!("app:{key}"), value)
+    }
+
+    /// Read an app-level blob previously written by [`Self::put_app_state`], or `None` if unset.
+    pub fn get_app_state(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.get_meta(&format!("app:{key}"))
+    }
+
     /// Record a scan verdict for an artifact, sealed under the metadata subkey.
     pub fn put_verdict(&self, artifact: &ArtifactRef, verdict: &ScanVerdict) -> Result<()> {
         let key = verdict_key(artifact);

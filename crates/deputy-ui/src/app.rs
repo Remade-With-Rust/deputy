@@ -647,10 +647,58 @@ enum Tab {
     Production,
 }
 
+/// Shared download-job state, owned by [`Dashboard`] (which stays mounted across tab switches)
+/// and read by `GitHubTab` via context. Because the driving spawns live in Dashboard's scope —
+/// not a tab's — navigating away no longer cancels the in-flight POST (so the embedded API keeps
+/// acquiring in the background) or loses the progress. A tab kicks off a download by writing
+/// `request`; the runner in Dashboard picks it up.
+#[derive(Clone, Copy)]
+struct DownloadJob {
+    active: Signal<bool>,
+    progress: Signal<Option<ProgressView>>,
+    result: Signal<Option<Result<FolderSummary, String>>>,
+    request: Signal<Option<serde_json::Value>>,
+}
+
 #[component]
 fn Dashboard(session: Session, sess: Signal<Option<Session>>) -> Element {
     let mut sess = sess;
     let tab = use_signal(|| Tab::GitHub);
+
+    // ── Background download job (persists across tab switches) ────────────────
+    // These signals + the runner below live in Dashboard's scope, so the work keeps going and
+    // the progress keeps updating even when GitHubTab is unmounted by navigating to another tab.
+    let mut active = use_signal(|| false);
+    let mut progress = use_signal(|| None::<ProgressView>);
+    let mut result = use_signal(|| None::<Result<FolderSummary, String>>);
+    let mut request = use_signal(|| None::<serde_json::Value>);
+    use_effect(move || {
+        // Fires when a tab dispatches a new download via `request`.
+        if let Some(body) = request() {
+            request.set(None);
+            active.set(true);
+            progress.set(None);
+            result.set(None);
+            // Poll server-side acquisition progress until the download finishes.
+            spawn(async move {
+                while active() {
+                    if let Ok(p) =
+                        get_json::<Option<ProgressView>>("/github/download/progress").await
+                    {
+                        progress.set(p);
+                    }
+                    sleep_ms(400).await;
+                }
+                progress.set(None);
+            });
+            // The download itself — kept alive here, so it survives tab navigation.
+            spawn(async move {
+                result.set(Some(post_json::<FolderSummary>("/github/download", &body).await));
+                active.set(false);
+            });
+        }
+    });
+    use_context_provider(|| DownloadJob { active, progress, result, request });
 
     rsx! {
         div { class: "shell",
@@ -664,6 +712,16 @@ fn Dashboard(session: Session, sess: Signal<Option<Session>>) -> Element {
                     NavItem { tab, this: Tab::Analytics, label: "Dep Analytics" }
                     NavItem { tab, this: Tab::Production, label: "Production Dependencies" }
                 }
+                {if active() {
+                    let p = progress.read().clone();
+                    let label = match p {
+                        Some(ref p) if p.total > 0 => format!("downloading {}/{}…", p.done, p.total),
+                        _ => "downloading…".to_string(),
+                    };
+                    rsx! { div { class: "sb-busy", span { class: "sb-spinner" } "{label}" } }
+                } else {
+                    rsx! {}
+                }}
                 div { class: "sb-footer",
                     span { class: "did", "● {session.did}" }
                     {if !session.mid_active {
@@ -715,9 +773,12 @@ fn GitHubTab() -> Element {
     let mut connect_err = use_signal(|| None::<String>);
     let mut selected = use_signal(HashSet::<String>::new);
     let mut folder = use_signal(|| "MATA Infra".to_string());
-    let mut downloading = use_signal(|| false);
-    let mut progress = use_signal(|| None::<ProgressView>);
-    let mut result = use_signal(|| None::<Result<FolderSummary, String>>);
+    // The download job is owned by Dashboard so it keeps running across tab switches.
+    let job = use_context::<DownloadJob>();
+    let downloading = job.active;
+    let progress = job.progress;
+    let result = job.result;
+    let mut request = job.request;
 
     // Restore the connected accounts + their repos from the server (set earlier this session).
     use_effect(move || {
@@ -893,22 +954,9 @@ fn GitHubTab() -> Element {
                                     "folder": folder().trim(),
                                     "repos": selected.read().iter().cloned().collect::<Vec<_>>(),
                                 });
-                                downloading.set(true);
-                                progress.set(None);
-                                // Poll acquisition progress while the download runs.
-                                spawn(async move {
-                                    while downloading() {
-                                        if let Ok(p) = get_json::<Option<ProgressView>>("/github/download/progress").await {
-                                            progress.set(p);
-                                        }
-                                        sleep_ms(400).await;
-                                    }
-                                    progress.set(None);
-                                });
-                                spawn(async move {
-                                    result.set(Some(post_json::<FolderSummary>("/github/download", &body).await));
-                                    downloading.set(false);
-                                });
+                                // Hand off to the persistent runner in Dashboard, so the download
+                                // keeps going and its progress keeps updating across tab switches.
+                                request.set(Some(body));
                             },
                             {if downloading() { "Downloading…" } else { "Download and Analyze" }}
                         }
@@ -1823,8 +1871,11 @@ button.dev:hover { background: #1c2029; color: #c4c9d4; border-color: #4a5160; }
 .nav-item:hover { background: #1c2029; }
 .nav-item.active { background: rgba(139,92,246,0.15); color: #b794ff; }
 .sb-footer { display: flex; flex-direction: column; gap: 8px; font-size: 13px; padding: 0 6px; }
+.sb-busy { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #c4b5fd; padding: 8px 6px; }
+.sb-spinner { width: 12px; height: 12px; border: 2px solid #3a2f5a; border-top-color: #8b5cf6; border-radius: 50%; animation: spin 0.8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .did { color: #34d399; word-break: break-all; }
-.content { flex: 1; padding: 24px 32px; max-width: 920px; }
+.content { flex: 1; min-width: 0; padding: 24px 32px; }
 
 button { background: #8b5cf6; color: white; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-weight: 500; }
 button:hover { background: #7c3aed; }

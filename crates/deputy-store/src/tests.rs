@@ -135,6 +135,58 @@ fn verdicts_roundtrip_and_persist() {
 }
 
 #[test]
+fn app_state_roundtrips_and_persists_encrypted() {
+    let (dir, vault) = fresh();
+    assert_eq!(vault.get_app_state("github_connections").unwrap(), None);
+
+    // A blob standing in for serialized GitHub connections (PAT included).
+    let blob = br#"[{"label":"acct","token":"ghp_secrettoken","owner":"org"}]"#;
+    vault.put_app_state("github_connections", blob).unwrap();
+    assert_eq!(
+        vault.get_app_state("github_connections").unwrap().as_deref(),
+        Some(&blob[..])
+    );
+
+    // Survives a full lock/unlock cycle (the real "restart" path).
+    drop(vault);
+    let reopened = Vault::unlock(dir.path(), PW).unwrap();
+    assert_eq!(
+        reopened.get_app_state("github_connections").unwrap().as_deref(),
+        Some(&blob[..])
+    );
+
+    // And the secret never sits in cleartext on disk — the collection encrypts it at rest.
+    let mut leaked = false;
+    for entry in walkdir(dir.path()) {
+        if let Ok(bytes) = std::fs::read(&entry) {
+            if bytes.windows(b"ghp_secrettoken".len()).any(|w| w == b"ghp_secrettoken") {
+                leaked = true;
+            }
+        }
+    }
+    assert!(!leaked, "PAT must not appear in cleartext on disk");
+}
+
+/// Minimal recursive file walk (avoids adding a dep just for this test).
+fn walkdir(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        if let Ok(rd) = std::fs::read_dir(&p) {
+            for e in rd.flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    out.push(path);
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
 fn audit_chain_links_and_verifies() {
     let (_dir, vault) = fresh();
     let e0 = vault.audit_append("promote", json!({"hash": "a"})).unwrap();

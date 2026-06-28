@@ -91,8 +91,9 @@ pub struct HeartbeatReport {
 }
 
 /// A connected GitHub account: a fine-grained PAT plus a human label (its login by default).
-/// Held in memory for the session only — never persisted.
-#[derive(Clone)]
+/// Persisted (PAT included) into the AES-256-GCM-encrypted vault metadata so connections survive
+/// restarts; the token is only ever recoverable with the vault passphrase.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct GhConnection {
     pub label: String,
     pub token: String,
@@ -534,6 +535,11 @@ impl DeputyService {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "http://localhost:8080".to_owned());
 
+        // Reload GitHub connections + folder groupings persisted on a previous run (encrypted in
+        // the vault), so they survive app restarts instead of resetting every launch.
+        let github_connections = Self::load_github_connections(&vault);
+        let folders = Self::load_folders(&vault);
+
         Ok(Self {
             vault,
             session: std::sync::Mutex::new(session),
@@ -546,14 +552,63 @@ impl DeputyService {
             authenticator: Authenticator::in_memory(),
             mid_audience,
             mid_active: std::sync::atomic::AtomicBool::new(mid_active),
-            github_connections: std::sync::Mutex::new(Vec::new()),
-            folders: std::sync::Mutex::new(HashMap::new()),
+            github_connections: std::sync::Mutex::new(github_connections),
+            folders: std::sync::Mutex::new(folders),
             analytics_cache: std::sync::Mutex::new(HashMap::new()),
             download_progress: std::sync::Mutex::new(None),
         })
     }
 
     /// Attach an advisory database used by [`DeputyService::scan`].
+    // ── Persisted GitHub state ────────────────────────────────────────────────
+    // Connections + folders live in the encrypted vault metadata so they survive restarts.
+
+    fn load_github_connections(vault: &Vault) -> Vec<GhConnection> {
+        vault
+            .get_app_state("github_connections")
+            .ok()
+            .flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    fn load_folders(vault: &Vault) -> HashMap<String, FolderSummary> {
+        let list: Vec<FolderSummary> = vault
+            .get_app_state("folders")
+            .ok()
+            .flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        list.into_iter().map(|f| (f.name.clone(), f)).collect()
+    }
+
+    /// Write the current GitHub connections back to the encrypted vault (best-effort; a write
+    /// failure must not fail the user-facing operation that triggered it).
+    fn persist_github_connections(&self) {
+        let snapshot = self
+            .github_connections
+            .lock()
+            .expect("github connections mutex")
+            .clone();
+        if let Ok(json) = serde_json::to_vec(&snapshot) {
+            let _ = self.vault.put_app_state("github_connections", &json);
+        }
+    }
+
+    /// Write the current folder groupings back to the encrypted vault (best-effort).
+    fn persist_folders(&self) {
+        let snapshot: Vec<FolderSummary> = self
+            .folders
+            .lock()
+            .expect("folders mutex")
+            .values()
+            .cloned()
+            .collect();
+        if let Ok(json) = serde_json::to_vec(&snapshot) {
+            let _ = self.vault.put_app_state("folders", &json);
+        }
+    }
+
     pub fn with_advisories(mut self, advisories: AdvisoryDb) -> Self {
         self.advisories = std::sync::RwLock::new(advisories);
         self
@@ -609,6 +664,8 @@ impl DeputyService {
                 owner,
             }),
         }
+        drop(conns);
+        self.persist_github_connections();
         Ok(())
     }
 
@@ -619,6 +676,7 @@ impl DeputyService {
             .lock()
             .expect("github connections mutex")
             .retain(|c| c.label != label);
+        self.persist_github_connections();
         Ok(())
     }
 
@@ -772,6 +830,7 @@ impl DeputyService {
             .lock()
             .expect("folders mutex")
             .insert(folder, summary.clone());
+        self.persist_folders();
         Ok(summary)
     }
 
@@ -800,6 +859,7 @@ impl DeputyService {
             .lock()
             .expect("analytics mutex")
             .remove(name);
+        self.persist_folders();
         Ok(())
     }
 

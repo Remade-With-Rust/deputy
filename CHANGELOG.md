@@ -8,6 +8,44 @@ Conventional Commits.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-10
+
+### Added
+
+- **mID-bound vault access.** The vault stays sealed until an mID sign-in supplies a verified DID,
+  then unlocks *bound to that identity* (`Vault::create_bound` / `unlock_bound`,
+  `deputy_crypto::derive_master_bound`, `deputy_api::open_gated`) — another identity's sign-in
+  cannot open it, even with the right passphrase. Identity authorizes; the passphrase decrypts.
+- **Local-folder ingestion** (`POST /local/download`, `DeputyService::download_local`) alongside
+  GitHub, with a native folder picker in the desktop UI.
+- **Offline-coverage check** (`GET /folders/coverage`, `DeputyService::folder_coverage`) — which
+  dependencies are safely archived vs. gaps (git deps, non-crates.io registries, failures).
+- **Per-folder scanning** (`DeputyService::scan_folder`) and staging → production redeploy, which
+  scans each dependency before promoting so flagged deps stay in staging.
+- Persisted GitHub connections and folders, with downloads that keep running across tab switches.
+- Desktop app: a native single-binary build with an embedded, self-contained API, and
+  `deputy://` / `mata-mid://` deep-link mID sign-in with no browser hop.
+- `deputy_api::default_vault_dir()` — cross-platform vault resolution honoring `$DEPUTY_VAULT`.
+
+### Changed
+
+- Folder operations read the **stored** lockfiles rather than re-fetching them from GitHub, so a
+  scan reflects the bytes actually archived.
+- Folder and connection listings are gated on vault unlock, like every other read.
+- mID sign-in speaks the real `@matanetwork/sovereign-id` v1 wire protocol; audience origin fixed.
+- Per-crate READMEs rewritten to the Remade With Rust format and branding.
+
+### Fixed
+
+- No runtime-drop panic on the desktop `deputy://` verify callback (it runs on its own thread).
+- GitHub: multiple accounts, owner-scoped repository listing, and PAT-permission handling.
+
+## [0.1.0] - 2026-06-25
+
+Initial release. The full pipeline — acquire → analyze → scan → promote → gate → deploy — plus
+encrypted-at-rest storage (Argon2id + AES-256-GCM, SpaceDB Layer 0), mID-gated access, SpaceDB
+capabilities/durability/CRDT layers, and the localhost API + Dioxus UI.
+
 ### Added
 
 - Cross-device metadata sync (CRDT) end-to-end encrypted under an **mID-bound sync key**, with a
@@ -20,9 +58,3 @@ Conventional Commits.
 - Dual-licensed under **MIT OR Apache-2.0** (was Apache-2.0) — free for any use, no restrictions.
 - Depend on the published crates.io versions of the MATA mID and SpaceDB crates (no more
   `mata-master` path or git dependencies); the workspace is now fully portable and embeddable.
-
-## [0.1.0] - Unreleased
-
-Initial workspace. The full pipeline — acquire → analyze → scan → promote → gate → deploy —
-plus encrypted-at-rest storage (Argon2id + AES-256-GCM, SpaceDB Layer 0), mID-gated access,
-SpaceDB capabilities/durability/CRDT layers, and the localhost API + Dioxus UI.

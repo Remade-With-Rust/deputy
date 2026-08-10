@@ -11,14 +11,14 @@ keywords = ["supply-chain", "security", "dependencies", "api"]
 categories = ["development-tools", "web-programming::http-server"]
 
 [dependencies]
-deputy-core = { path = "../deputy-core", version = "0.1.0" }
-deputy-store = { path = "../deputy-store", version = "0.1.0" }
-deputy-id = { path = "../deputy-id", version = "0.1.0" }
-deputy-ecosystem = { path = "../deputy-ecosystem", version = "0.1.0" }
-deputy-acquire = { path = "../deputy-acquire", version = "0.1.0" }
-deputy-analyze = { path = "../deputy-analyze", version = "0.1.0" }
-deputy-scan = { path = "../deputy-scan", version = "0.1.0" }
-deputy-deploy = { path = "../deputy-deploy", version = "0.1.0" }
+deputy-core = { path = "../deputy-core", version = "0.2.0" }
+deputy-store = { path = "../deputy-store", version = "0.2.0" }
+deputy-id = { path = "../deputy-id", version = "0.2.0" }
+deputy-ecosystem = { path = "../deputy-ecosystem", version = "0.2.0" }
+deputy-acquire = { path = "../deputy-acquire", version = "0.2.0" }
+deputy-analyze = { path = "../deputy-analyze", version = "0.2.0" }
+deputy-scan = { path = "../deputy-scan", version = "0.2.0" }
+deputy-deploy = { path = "../deputy-deploy", version = "0.2.0" }
 # SpaceDB Layer 5 — signed, scoped, expiring, revocable capabilities (P-256, mID family) that
 # gate every operation for humans AND AI agents.
 spacedb-access = "=0.1.0"

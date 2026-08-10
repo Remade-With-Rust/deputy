@@ -15,12 +15,12 @@ name = "deputy"
 path = "src/main.rs"
 
 [dependencies]
-deputy-core = { path = "../deputy-core", version = "0.1.0" }
-deputy-store = { path = "../deputy-store", version = "0.1.0" }
-deputy-ecosystem = { path = "../deputy-ecosystem", version = "0.1.0" }
-deputy-acquire = { path = "../deputy-acquire", version = "0.1.0" }
-deputy-analyze = { path = "../deputy-analyze", version = "0.1.0" }
-deputy-scan = { path = "../deputy-scan", version = "0.1.0" }
-deputy-deploy = { path = "../deputy-deploy", version = "0.1.0" }
-deputy-api = { path = "../deputy-api", version = "0.1.0" }
+deputy-core = { path = "../deputy-core", version = "0.2.0" }
+deputy-store = { path = "../deputy-store", version = "0.2.0" }
+deputy-ecosystem = { path = "../deputy-ecosystem", version = "0.2.0" }
+deputy-acquire = { path = "../deputy-acquire", version = "0.2.0" }
+deputy-analyze = { path = "../deputy-analyze", version = "0.2.0" }
+deputy-scan = { path = "../deputy-scan", version = "0.2.0" }
+deputy-deploy = { path = "../deputy-deploy", version = "0.2.0" }
+deputy-api = { path = "../deputy-api", version = "0.2.0" }
 clap = { version = "4", features = ["derive"] }

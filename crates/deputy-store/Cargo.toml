@@ -11,8 +11,8 @@ keywords = ["vault", "encryption", "storage", "content-addressed", "security"]
 categories = ["cryptography", "database-implementations"]
 
 [dependencies]
-deputy-core = { path = "../deputy-core", version = "0.1.0" }
-deputy-crypto = { path = "../deputy-crypto", version = "0.1.0" }
+deputy-core = { path = "../deputy-core", version = "0.2.0" }
+deputy-crypto = { path = "../deputy-crypto", version = "0.2.0" }
 # SpaceDB Layer 0 (Remade With Rust): the durable, transactional KV engine. Replaces our direct
 # redb dependency — redb is now an internal engine detail of SpaceDB. See docs/STORAGE.md §4.
 # Exact pins (`=`): Deputy practises its own thesis and freezes the trust-base versions.

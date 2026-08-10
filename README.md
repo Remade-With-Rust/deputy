@@ -1,17 +1,24 @@
 # Deputy
 
+[![crates.io](https://img.shields.io/crates/v/deputy-cli?logo=rust)](https://crates.io/crates/deputy-cli)
+[![docs.rs](https://img.shields.io/docsrs/deputy-core?logo=docsdotrs)](https://docs.rs/deputy-core)
 [![CI](https://github.com/Remade-With-Rust/deputy/actions/workflows/ci.yml/badge.svg)](https://github.com/Remade-With-Rust/deputy/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/deputy-cli.svg)](https://crates.io/crates/deputy-cli)
-[![docs.rs](https://img.shields.io/docsrs/deputy-core)](https://docs.rs/deputy-core)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+[![Remade With Rust](https://img.shields.io/badge/Remade%20With-Rust-000?logo=rust&logoColor=fff)](https://github.com/Remade-With-Rust)
+[![By Mata Network](https://img.shields.io/badge/by-Mata%20Network-5b2be0)](https://www.mata.network/)
 
-**A personally-owned, verified vault and supply-chain gate for your code dependencies.**
+> **A personally-owned, verified vault and supply-chain gate for your code dependencies.**
+> Archive every crate you build against, scan it, and gate what reaches production — so a
+> registry outage, a takedown, or a hijacked release can't change your build.
 
 Deputy takes the full transitive dependency closure of your repositories, downloads every
 crate into a local encrypted vault you own, verifies and scans each one, and gates what
 reaches production — so your builds can consume *your* verified copies instead of trusting a
 live registry. If crates.io changes, disappears, or ships a compromised release, you still
 hold the exact bytes you vetted.
+
+Part of **[Remade With Rust](https://github.com/Remade-With-Rust)** by
+**[Mata Network](https://www.mata.network/)**.
 
 ```sh
 cargo install deputy-cli   # provides the `deputy` binary
@@ -139,6 +146,26 @@ Requires Rust 1.85+. The web UI builds with [Dioxus](https://dioxuslabs.com/) (`
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: please
 follow [SECURITY.md](SECURITY.md). Release process: [RELEASING.md](RELEASING.md).
+
+## The Remade With Rust ecosystem
+
+<!-- ORG BOILERPLATE — keep identical across repos -->
+
+**Remade With Rust** is an initiative by **[Mata Network](https://www.mata.network/)**
+to rebuild essential C and C++ tools in Rust — for the memory safety, the
+predictable performance, and the freedom of a permissive license. Each project
+is a reimplementation, not a fork: same wire protocols and file formats, new
+code you can actually depend on. No copyleft. No surprises.
+
+| Project | What it is |
+|---|---|
+| 🎬 **[remade_ffmpeg_rs](https://github.com/Remade-With-Rust/remade_ffmpeg_rs)** | **Our FFmpeg alternative.** Drop-in `ffmpeg` and `ffprobe` binaries — demux → decode → filter → encode → mux, rebuilt as composable Rust crates with **zero GPL/LGPL**. Apache-2.0. |
+| 🧠 **[FFAI](https://github.com/Remade-With-Rust/FFAI)** | **Our sister project: media *for* AI.** "The AI media toolkit, remade with rust." Embedded ASR + TTS (**Mercury**), OCR (**Carmenta**) and vision-language captioning (**Argus**) behind an ffmpeg-style, swap-by-name architecture — no Python, no CUDA. MIT OR Apache-2.0. |
+| 🌐 **[Mata Network](https://www.mata.network/)** | **The home page.** *"Stop sacrificing your privacy for convenience."* Sovereign, self-hostable privacy infrastructure — wallet & identity, password manager, contact manager, and a browser extension that stops information leaking as you browse. Remade With Rust is its open-source arm. |
+
+→ All projects: **[github.com/Remade-With-Rust](https://github.com/Remade-With-Rust)**
+
+<!-- /ORG BOILERPLATE -->
 
 ## License
 

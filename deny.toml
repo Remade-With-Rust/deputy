@@ -65,6 +65,10 @@ ignore = [
     # SpaceDB durability: reed-solomon-erasure -> parking_lot 0.11 -> instant. Accepted until
     # reed-solomon bumps parking_lot. Reviewed 2026-06-24.
     "RUSTSEC-2024-0384",
+    # `smallstr` is UNMAINTAINED (not a vulnerability; recommends `compact_str`/`smol_str`), and
+    # every version is affected — there is no safe upgrade. Transitive via SpaceDB Layer 1:
+    # spacedb-crdt -> yrs 0.25 -> smallstr. Accepted until `yrs` drops it. Reviewed 2026-08-10.
+    "RUSTSEC-2026-0215",
 ]
 
 [sources]

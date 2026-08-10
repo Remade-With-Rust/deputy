@@ -1346,7 +1346,18 @@ impl DeputyService {
         let pins = self.folder_unique_pins(&name)?;
         let hold: HashSet<(String, String)> = hold.into_iter().collect();
         let did = self.session().did;
+
+        // Scan each dep first so its verdict is recorded — `promote` refuses anything un-scanned.
+        // This makes "Redeploy to Production" self-contained: scan, then promote the clean ones.
+        {
+            let advisories = self.advisories.read().expect("advisories lock");
+            for pin in &pins {
+                let _ = scan(&vault, pin, &advisories);
+            }
+        }
+
         // Promote every clean, acquired dependency that the caller did NOT hold back in staging.
+        // `promote` quarantines anything with scan findings, so flagged deps stay in staging.
         let promoted = pins
             .iter()
             .filter(|pin| {

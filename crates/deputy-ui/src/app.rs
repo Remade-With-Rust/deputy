@@ -527,9 +527,13 @@ fn launch_mata_deeplink(nonce: &str) {
         "rp_origin": API_BASE,
         "nonce": nonce,
         "claims": { "required": ["did"], "optional": [], "custom": {} },
-        // Return straight into the app via the `deputy://` scheme — the OS routes it to our
-        // native handler (app::handle_mid_callback), so there is no browser hop at all.
-        "callback": "deputy://mid-callback",
+        // Return via the embedded API's /auth/callback page: the wallet opens it in the
+        // default browser, the page reads the #mid_response fragment and POSTs the token to
+        // /auth/verify, and our /health poll flips. One browser hop, but it needs NO custom
+        // URL scheme — a bare (non-bundled) binary cannot register `deputy://` with macOS
+        // LaunchServices, so the schemeless path is the one that works everywhere.
+        // (`deputy://` stays handled in handle_mid_callback for OS-bundled installs.)
+        "callback": format!("{API_BASE}/auth/callback"),
     });
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string());
     let url = format!("mata-mid://request?payload={b64}");

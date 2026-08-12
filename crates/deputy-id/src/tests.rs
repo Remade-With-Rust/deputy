@@ -210,11 +210,15 @@ fn expired_token_fails_verification() {
 
 #[test]
 fn nonce_store_enforces_single_use() {
+    // The mid-signin store takes the clock as a parameter (nonces age out on a TTL).
     let store = InMemoryNonceStore::new();
-    let nonce = store.issue();
-    assert!(store.consume(&nonce), "first use succeeds");
-    assert!(!store.consume(&nonce), "second use fails");
-    assert!(!store.consume("never-issued"), "unknown nonce fails");
+    let nonce = store.issue(IAT).unwrap();
+    assert!(store.consume(&nonce, IAT + 1).unwrap(), "first use succeeds");
+    assert!(!store.consume(&nonce, IAT + 1).unwrap(), "second use fails");
+    assert!(
+        !store.consume("never-issued", IAT + 1).unwrap(),
+        "unknown nonce fails"
+    );
 }
 
 #[test]

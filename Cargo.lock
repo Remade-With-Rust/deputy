@@ -1486,14 +1486,13 @@ name = "deputy-id"
 version = "0.2.0"
 dependencies = [
  "base64",
- "getrandom 0.3.4",
  "kms-client",
  "mid-issuer",
+ "mid-signin",
  "mid-verify",
  "p256",
  "serde_json",
  "sha2",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4061,6 +4060,20 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "mid-signin"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cfdd674e8f5462e786108d2747b304fde67f38a7d6ccb82d913e2911f7c33e2"
+dependencies = [
+ "base64",
+ "getrandom 0.3.4",
+ "mid-verify",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 

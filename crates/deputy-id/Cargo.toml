@@ -10,18 +10,16 @@ authors.workspace = true
 keywords = ["identity", "authentication", "did", "jwt", "mid"]
 categories = ["authentication", "cryptography"]
 [dependencies]
-# The public MATA mID reference (RP-side verification) — published from
-# github.com/Remade-With-Rust/mid, the authoritative source the JS SDK
-# (@matanetwork/sovereign-id) mirrors. Exact pin (`=`): Deputy practises its own thesis and
-# freezes the trust-base version. Chain: mid-verify -> mid-issuer -> kms-client (pulls
-# reqwest/tokio; see AUTH.md §10).
-mid-verify = "=0.1.0"
-thiserror = { workspace = true }
-getrandom = "0.3"
+# The public MATA mID relying-party kit (github.com/Remade-With-Rust/mid) — verification
+# (via its mid-verify core) PLUS the stateful RP duties this crate used to hand-roll:
+# single-use nonces, genesis anchoring, rollback detection. Exact pin (`=`): Deputy
+# practises its own thesis and freezes the trust-base version (AUTH.md §10).
+mid-signin = "=0.1.0"
 
 [dev-dependencies]
 # Token-minting harness for tests: mint real wallet-style mID tokens, then verify them. Same
-# pinned version as the verifier so the canonical wire format matches exactly.
+# pinned versions as the kit's core so the canonical wire format matches exactly.
+mid-verify = "=0.1.0"
 mid-issuer = "=0.1.0"
 kms-client = "=0.1.0"
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }

@@ -15,6 +15,7 @@ fi
 
 # Dependency order: a crate is published only after all of its deps are on crates.io.
 CRATES=(
+  deputy-alloc
   deputy-core
   deputy-crypto
   deputy-id

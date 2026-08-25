@@ -55,8 +55,9 @@ sealed under the metadata subkey. The **audit log** is append-only and hash-chai
 | `snapshot` | `snapshot` / `restore` — Reed-Solomon erasure-coded backups, recoverable from *k* of *n* shards |
 | `sync` | `export_metadata` / `import_metadata` — conflict-free multi-device metadata sync (CRDT) under an identity-bound key |
 
-The SpaceDB layers (`spacedb-store`, `spacedb-crdt`, `spacedb-durability`) are pinned **exactly**
-(`=`): Deputy freezes its own trust base.
+The SpaceDB layers (`spacedb-store`, `spacedb-crdt`, `spacedb-durability`, `spacedb-replica`,
+`spacedb-meter`, `spacedb-sdk`) are pinned at **0.5.2**. Libraries take `spacedb-sdk` with
+`default-features = false` so the allocator is owned by `deputy-alloc`.
 
 ## Install
 

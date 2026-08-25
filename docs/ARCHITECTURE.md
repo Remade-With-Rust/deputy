@@ -97,6 +97,7 @@ deputy/
 ├─ Cargo.toml                     # workspace manifest
 ├─ crates/
 │  ├─ deputy-core/                # domain types, state machine, trait contracts. No I/O.
+│  ├─ deputy-alloc/               # rusty_alloc seam — declared only in deliverables
 │  ├─ deputy-crypto/              # Argon2id KDF, AES-256-GCM, key hierarchy, sealed blobs
 │  ├─ deputy-id/                  # MATA mID verify (pure Rust), identity & session
 │  ├─ deputy-store/               # dirty repo, prod repo, encrypted metadata DB

@@ -1372,7 +1372,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "deputy-acquire"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deputy-core",
  "deputy-store",
@@ -1383,8 +1383,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "deputy-alloc"
+version = "0.3.0"
+dependencies = [
+ "rusty_alloc",
+ "rusty_alloc-api",
+]
+
+[[package]]
 name = "deputy-analyze"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deputy-core",
  "flate2",
@@ -1395,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum 0.7.9",
  "deputy-acquire",
@@ -1407,11 +1415,13 @@ dependencies = [
  "deputy-scan",
  "deputy-store",
  "flate2",
+ "mata-cap",
  "reqwest",
  "semver",
  "serde",
  "serde_json",
  "spacedb-access",
+ "spacedb-sdk",
  "tar",
  "tempfile",
  "tokio",
@@ -1422,10 +1432,11 @@ dependencies = [
 
 [[package]]
 name = "deputy-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "deputy-acquire",
+ "deputy-alloc",
  "deputy-analyze",
  "deputy-api",
  "deputy-core",
@@ -1437,14 +1448,14 @@ dependencies = [
 
 [[package]]
 name = "deputy-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "deputy-crypto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1458,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-deploy"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deputy-core",
  "deputy-store",
@@ -1472,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-ecosystem"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deputy-core",
  "serde",
@@ -1483,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-id"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "kms-client",
@@ -1497,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-scan"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deputy-analyze",
  "deputy-core",
@@ -1510,16 +1521,20 @@ dependencies = [
 
 [[package]]
 name = "deputy-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "deputy-core",
  "deputy-crypto",
- "postcard",
+ "oxicode",
+ "rusty_zstd",
  "serde",
  "serde_json",
  "sha2",
  "spacedb-crdt",
  "spacedb-durability",
+ "spacedb-meter",
+ "spacedb-replica",
+ "spacedb-sdk",
  "spacedb-store",
  "tempfile",
  "thiserror 2.0.18",
@@ -1527,18 +1542,23 @@ dependencies = [
 
 [[package]]
 name = "deputy-ui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
+ "deputy-alloc",
  "deputy-api",
  "dioxus",
  "gloo-net",
  "gloo-timers",
  "reqwest",
  "rfd 0.15.4",
+ "rusty_a11y",
+ "rusty_symbols",
+ "rusty_tokens",
  "serde",
  "serde_json",
  "tokio",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3968,6 +3988,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mata-cap"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8d381f5624917df7266426fcef3f2c40cb9fa78fcbc06481321735282ba943a"
+dependencies = [
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "match_token"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4529,6 +4559,28 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "oxicode"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6203cc780065bb9efa1f569607d9b2a36926b41f1b50915af5764f6917511735"
+dependencies = [
+ "oxicode_derive",
+ "serde",
+ "unty",
+]
+
+[[package]]
+name = "oxicode_derive"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a593f017bcbfd8b6828c4c7f7102c8c88d4a586cd0ec60e7dddb5576a21cec4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -5608,6 +5660,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "rusty_a11y"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32b33056772f9ff573e20dd445997d4aa35e459593734d51674fbfab9f90366c"
+
+[[package]]
+name = "rusty_alloc"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "037acdf50c589a85578aab74b848346b353c94db19ddad4774bfa925afbd128a"
+dependencies = [
+ "libc",
+ "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "rusty_alloc-api"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02301ad2df6159237fe4087334310d48543aa626ae9b89410b38a9d5b77e04e0"
+dependencies = [
+ "rusty_alloc",
+]
+
+[[package]]
+name = "rusty_symbols"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a9bb508b2555b865bf3d339e44dccf790ba09c54341f3c41058b57e61853e1d"
+
+[[package]]
+name = "rusty_tokens"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa93a03c43b2aa9f185d2cc300f326c770683e05b78d32f7bad4c8c7092067b9"
+
+[[package]]
+name = "rusty_zstd"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1636aed13fadd8fd7794027a483fcf005848055793292cfdd27782a9b6fea24c"
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6039,9 +6134,9 @@ dependencies = [
 
 [[package]]
 name = "spacedb-access"
-version = "0.1.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a696d13f02b319946a35e43fdb43b6feddf64137e3841364dc62487ccf5553ba"
+checksum = "a109d0f044a19e4c31ee8e04a72629290ac2c48dfaaefe28177b9b06d8ac35c4"
 dependencies = [
  "blake3",
  "getrandom 0.3.4",
@@ -6052,11 +6147,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "spacedb-crdt"
-version = "0.1.0"
+name = "spacedb-consistency"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1181c65fcf97d7b0697eff03c268ca3b68422fc902acc313d2bf29d03ffaf329"
+checksum = "b78eb34d357514ec94a2e23c7ef09a7fc3966ae8e4e5019ce598dcf5f45171f4"
 dependencies = [
+ "spacedb-crdt",
+]
+
+[[package]]
+name = "spacedb-crdt"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65ecfab39719ce6c56e4498e7f2a29cfd7a88fd872e2a2ec45632f745ae0e997"
+dependencies = [
+ "getrandom 0.3.4",
  "serde",
  "serde_json",
  "spacedb-store",
@@ -6066,9 +6171,9 @@ dependencies = [
 
 [[package]]
 name = "spacedb-durability"
-version = "0.1.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "417cd2a9b83ad38dc260ffe20b39141b20664ee092eeecdf69e2b93196c6e889"
+checksum = "e028c06decd498d21f36a847ecacbf6de4739cb768f4c067be725a1432fa74e9"
 dependencies = [
  "blake3",
  "postcard",
@@ -6078,13 +6183,48 @@ dependencies = [
 ]
 
 [[package]]
-name = "spacedb-store"
-version = "0.1.0"
+name = "spacedb-meter"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6037d770383c51561555edcf5aa89c0ae5d101176dcd93e9c8529e359ec2440d"
+checksum = "7c3b16039931f675c70121742d3910877828bd17fc87fc43c155dde9d227fc1e"
+dependencies = [
+ "postcard",
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "spacedb-replica"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ff7017c2637aaae6618fc13e09cdd7520b9b1ee3e78a663c2e81fce89bceb7c"
+dependencies = [
+ "spacedb-crdt",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "spacedb-sdk"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffe654798d055da32c3516fc57163cf81c4820c31340945e8896c431429f73e8"
+dependencies = [
+ "spacedb-access",
+ "spacedb-consistency",
+ "spacedb-crdt",
+ "spacedb-meter",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "spacedb-store"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "750ffd093e84a072b8cc3e3a1aca5588e597f52220f1ebd188a4d6758285901b"
 dependencies = [
  "aes-gcm",
  "blake3",
+ "getrandom 0.2.17",
  "postcard",
  "rand 0.8.6",
  "redb",
@@ -6814,6 +6954,12 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
+name = "unty"
+version = "0.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dbe8d477efbc6c70a1dea1f9f1e0482168983a9147dee6b3a619f666f3aeac6"
 
 [[package]]
 name = "ureq"

@@ -14,9 +14,14 @@ use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 
 use crate::error::ApiError;
+use crate::github_oauth::{
+    device_pending, gh_auth_token, gh_available, github_client_id, oauth_plan, poll_device_token,
+    request_device_code, spawn_gh_login, unavailable_message, DevicePoll, OauthPlan,
+    PendingGithubOauth,
+};
 use crate::service::{
-    CoverageReport, DepAnalytics, DeputyService, FolderScanReport, FolderSummary, HeartbeatReport,
-    NewVersionReport, ProdDep,
+    CombinedScanReport, CoverageReport, DepAnalytics, DeputyService, FolderScanReport,
+    FolderSummary, HeartbeatReport, NewVersionReport, ProdDep, WorkspaceOverview,
 };
 
 type AppState = State<Arc<DeputyService>>;
@@ -52,12 +57,17 @@ struct GitHubDisconnect {
 struct DownloadRequest {
     folder: String,
     repos: Vec<String>,
+    /// Persist each repo as its own workspace instead of one named group.
+    #[serde(default)]
+    split: bool,
 }
 
 #[derive(Deserialize)]
 struct LocalDownloadRequest {
     folder: String,
     path: String,
+    #[serde(default)]
+    split: bool,
 }
 
 #[derive(Deserialize)]
@@ -66,13 +76,11 @@ struct DeleteFolder {
 }
 
 #[derive(Deserialize)]
-struct ScanFolder {
+struct FolderScope {
     name: String,
-}
-
-#[derive(Deserialize)]
-struct AnalyticsRequest {
-    name: String,
+    /// When set, folder ops (scan/analytics/heartbeat/…) only cover this `owner/name`.
+    #[serde(default)]
+    repo: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -84,9 +92,14 @@ struct DepRef {
 #[derive(Deserialize)]
 struct PromoteRequest {
     name: String,
+    #[serde(default)]
+    repo: Option<String>,
     /// Dependencies to hold back in staging (everything else clean is pushed to production).
     #[serde(default)]
     hold: Vec<DepRef>,
+    /// When non-empty, only these name@version crates are promoted (checked new versions).
+    #[serde(default)]
+    only: Vec<DepRef>,
 }
 
 /// A GitHub repository, as surfaced to the UI (a subset of the GitHub REST `repo` object —
@@ -125,20 +138,30 @@ pub fn router(service: Arc<DeputyService>) -> Router {
         .route("/gate", post(gate))
         .route("/deploy", post(deploy))
         .route("/github/connect", post(github_connect))
+        .route("/github/oauth/start", post(github_oauth_start))
+        .route("/github/oauth/poll", post(github_oauth_poll))
         .route("/github/disconnect", post(github_disconnect))
         .route("/github/connections", get(github_connections))
         .route("/github/repos", get(github_repos))
         .route("/github/download", post(github_download))
         .route("/local/download", post(local_download))
         .route("/github/download/progress", get(download_progress))
+        .route("/folders/refresh", post(folder_refresh))
         .route("/folders", get(folders))
         .route("/folders/delete", post(delete_folder))
         .route("/folders/scan", post(folder_scan))
+        .route("/folders/scan-all", post(folder_scan_all))
+        .route("/folders/scan/progress", get(scan_progress))
+        .route("/folders/scan/last", post(folder_scan_last))
         .route("/folders/scan-new-versions", post(folder_scan_new_versions))
         .route("/folders/coverage", post(folder_coverage))
+        .route("/folders/overview", post(folder_overview))
         .route("/folders/analytics", post(folder_analytics))
+        .route("/folders/analytics/progress", get(analytics_progress))
         .route("/folders/heartbeat", post(folder_heartbeat))
+        .route("/folders/heartbeat/progress", get(heartbeat_progress))
         .route("/folders/promote", post(folder_promote))
+        .route("/folders/production", post(folder_production))
         .route("/production", get(production))
         .route("/advisories", get(advisory_count))
         .route("/advisories/rustsec", post(load_rustsec))
@@ -339,6 +362,124 @@ async fn github_connect(
     ))
 }
 
+#[derive(Deserialize)]
+struct GitHubOauthStart {
+    #[serde(default)]
+    owner: String,
+}
+
+/// Start a browser GitHub approval (device flow, or `gh auth login --web`).
+async fn github_oauth_start(
+    State(svc): AppState,
+    Json(req): Json<GitHubOauthStart>,
+) -> Result<Json<Value>, ApiError> {
+    svc.begin_github_oauth()?;
+    let owner = req.owner;
+    match oauth_plan(github_client_id(), gh_available()) {
+        OauthPlan::Device { client_id } => {
+            let started = request_device_code(&client_id).await?;
+            svc.set_github_oauth_pending(device_pending(
+                client_id,
+                started.device_code,
+                owner,
+                started.expires_in,
+            ));
+            Ok(Json(serde_json::to_value(&started.start).map_err(|e| {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            })?))
+        }
+        OauthPlan::GhCli => match gh_auth_token() {
+            Ok(token) => {
+                let (label, login) = store_github_token(&svc, token, owner).await?;
+                Ok(Json(json!({
+                    "method": "connected",
+                    "label": label,
+                    "login": login,
+                    "message": "Using your existing GitHub CLI session."
+                })))
+            }
+            Err(_) => {
+                spawn_gh_login().map_err(ApiError::bad_request)?;
+                svc.set_github_oauth_pending(PendingGithubOauth::Gh { owner });
+                Ok(Json(json!({
+                    "method": "gh",
+                    "interval": 3,
+                    "message": "Approve GitHub CLI in the browser tab that just opened."
+                })))
+            }
+        },
+        OauthPlan::Unavailable => Err(ApiError::bad_request(unavailable_message())),
+    }
+}
+
+/// Finish (or wait on) the in-flight browser GitHub approval.
+async fn github_oauth_poll(State(svc): AppState) -> Result<Json<Value>, ApiError> {
+    svc.begin_github_oauth()?;
+    let Some(pending) = svc.github_oauth_pending() else {
+        return Err(ApiError::bad_request("no GitHub sign-in in progress"));
+    };
+    match pending {
+        PendingGithubOauth::Device {
+            client_id,
+            device_code,
+            owner,
+            expires_at,
+        } => {
+            if std::time::Instant::now() >= expires_at {
+                svc.clear_github_oauth_pending();
+                return Ok(Json(json!({ "status": "expired" })));
+            }
+            match poll_device_token(&client_id, &device_code).await? {
+                DevicePoll::Pending => Ok(Json(json!({ "status": "pending" }))),
+                DevicePoll::Token(token) => {
+                    svc.clear_github_oauth_pending();
+                    let (label, login) = store_github_token(&svc, token, owner).await?;
+                    Ok(Json(
+                        json!({ "status": "connected", "label": label, "login": login }),
+                    ))
+                }
+                DevicePoll::Denied => {
+                    svc.clear_github_oauth_pending();
+                    Ok(Json(json!({ "status": "denied" })))
+                }
+                DevicePoll::Expired => {
+                    svc.clear_github_oauth_pending();
+                    Ok(Json(json!({ "status": "expired" })))
+                }
+                DevicePoll::Error(message) => {
+                    svc.clear_github_oauth_pending();
+                    Ok(Json(json!({ "status": "error", "message": message })))
+                }
+            }
+        }
+        PendingGithubOauth::Gh { owner } => match gh_auth_token() {
+            Ok(token) => {
+                svc.clear_github_oauth_pending();
+                let (label, login) = store_github_token(&svc, token, owner).await?;
+                Ok(Json(
+                    json!({ "status": "connected", "label": label, "login": login }),
+                ))
+            }
+            Err(_) => Ok(Json(json!({ "status": "pending" }))),
+        },
+    }
+}
+
+async fn store_github_token(
+    svc: &DeputyService,
+    token: String,
+    owner: String,
+) -> Result<(String, String), ApiError> {
+    let login = github_login(&token).await?;
+    let label = if owner.trim().is_empty() {
+        login.clone()
+    } else {
+        owner.trim().to_owned()
+    };
+    svc.connect_github(label.clone(), token, owner)?;
+    Ok((label, login))
+}
+
 async fn github_disconnect(
     State(svc): AppState,
     Json(req): Json<GitHubDisconnect>,
@@ -422,7 +563,9 @@ async fn github_download(
     State(svc): AppState,
     Json(req): Json<DownloadRequest>,
 ) -> Result<Json<FolderSummary>, ApiError> {
-    Ok(Json(svc.download_repos(req.folder, req.repos).await?))
+    Ok(Json(
+        svc.download_repos(req.folder, req.repos, req.split).await?,
+    ))
 }
 
 /// Acquire every dependency from the `Cargo.lock` files under a local folder path — same vault +
@@ -431,7 +574,14 @@ async fn local_download(
     State(svc): AppState,
     Json(req): Json<LocalDownloadRequest>,
 ) -> Result<Json<FolderSummary>, ApiError> {
-    Ok(Json(svc.download_local(req.folder, req.path)?))
+    Ok(Json(svc.download_local(req.folder, req.path, req.split)?))
+}
+
+async fn folder_refresh(
+    State(svc): AppState,
+    Json(req): Json<FolderScope>,
+) -> Result<Json<FolderSummary>, ApiError> {
+    Ok(Json(svc.refresh_workspace(req.name, req.repo).await?))
 }
 
 async fn download_progress(State(svc): AppState) -> Json<Value> {
@@ -455,37 +605,79 @@ async fn delete_folder(
 
 async fn folder_scan(
     State(svc): AppState,
-    Json(req): Json<ScanFolder>,
+    Json(req): Json<FolderScope>,
 ) -> Result<Json<FolderScanReport>, ApiError> {
-    Ok(Json(svc.scan_folder(req.name)?))
+    Ok(Json(svc.scan_folder(req.name, req.repo)?))
+}
+
+async fn folder_scan_all(
+    State(svc): AppState,
+    Json(req): Json<FolderScope>,
+) -> Result<Json<CombinedScanReport>, ApiError> {
+    Ok(Json(svc.scan_workspace(req.name, req.repo).await?))
+}
+
+async fn scan_progress(State(svc): AppState) -> Json<Value> {
+    match svc.scan_progress() {
+        Some(p) => Json(serde_json::to_value(p).unwrap_or(Value::Null)),
+        None => Json(Value::Null),
+    }
+}
+
+async fn folder_scan_last(
+    State(svc): AppState,
+    Json(req): Json<FolderScope>,
+) -> Result<Json<Option<CombinedScanReport>>, ApiError> {
+    Ok(Json(svc.last_scan(req.name, req.repo)?))
 }
 
 async fn folder_analytics(
     State(svc): AppState,
-    Json(req): Json<AnalyticsRequest>,
+    Json(req): Json<FolderScope>,
 ) -> Result<Json<DepAnalytics>, ApiError> {
-    Ok(Json(svc.folder_analytics(req.name).await?))
+    Ok(Json(svc.folder_analytics(req.name, req.repo).await?))
+}
+
+async fn analytics_progress(State(svc): AppState) -> Json<Value> {
+    match svc.analytics_progress() {
+        Some(p) => Json(serde_json::to_value(p).unwrap_or(Value::Null)),
+        None => Json(Value::Null),
+    }
 }
 
 async fn folder_scan_new_versions(
     State(svc): AppState,
-    Json(req): Json<AnalyticsRequest>,
+    Json(req): Json<FolderScope>,
 ) -> Result<Json<NewVersionReport>, ApiError> {
-    Ok(Json(svc.scan_new_versions(req.name).await?))
+    Ok(Json(svc.scan_new_versions(req.name, req.repo).await?))
 }
 
 async fn folder_coverage(
     State(svc): AppState,
-    Json(req): Json<AnalyticsRequest>,
+    Json(req): Json<FolderScope>,
 ) -> Result<Json<CoverageReport>, ApiError> {
-    Ok(Json(svc.folder_coverage(req.name)?))
+    Ok(Json(svc.folder_coverage(req.name, req.repo)?))
+}
+
+async fn folder_overview(
+    State(svc): AppState,
+    Json(req): Json<FolderScope>,
+) -> Result<Json<WorkspaceOverview>, ApiError> {
+    Ok(Json(svc.folder_overview(req.name, req.repo)?))
 }
 
 async fn folder_heartbeat(
     State(svc): AppState,
-    Json(req): Json<AnalyticsRequest>,
+    Json(req): Json<FolderScope>,
 ) -> Result<Json<HeartbeatReport>, ApiError> {
-    Ok(Json(svc.folder_heartbeat(req.name).await?))
+    Ok(Json(svc.folder_heartbeat(req.name, req.repo).await?))
+}
+
+async fn heartbeat_progress(State(svc): AppState) -> Json<Value> {
+    match svc.heartbeat_progress() {
+        Some(p) => Json(serde_json::to_value(p).unwrap_or(Value::Null)),
+        None => Json(Value::Null),
+    }
 }
 
 async fn folder_promote(
@@ -493,13 +685,24 @@ async fn folder_promote(
     Json(req): Json<PromoteRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let hold = req.hold.into_iter().map(|d| (d.name, d.version)).collect();
+    let only = req.only.into_iter().map(|d| (d.name, d.version)).collect();
     Ok(Json(
-        json!({ "promoted": svc.promote_folder(req.name, hold).await? }),
+        json!({ "promoted": svc.promote_folder(req.name, req.repo, hold, only).await? }),
     ))
 }
 
+async fn folder_production(
+    State(svc): AppState,
+    Json(req): Json<FolderScope>,
+) -> Result<Json<Vec<ProdDep>>, ApiError> {
+    Ok(Json(svc.production_deps(
+        Some(req.name.as_str()),
+        req.repo.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+    )?))
+}
+
 async fn production(State(svc): AppState) -> Result<Json<Vec<ProdDep>>, ApiError> {
-    Ok(Json(svc.production_deps()?))
+    Ok(Json(svc.production_deps(None, None)?))
 }
 
 async fn advisory_count(State(svc): AppState) -> Json<Value> {

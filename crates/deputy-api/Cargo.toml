@@ -11,21 +11,23 @@ keywords = ["supply-chain", "security", "dependencies", "api"]
 categories = ["development-tools", "web-programming::http-server"]
 
 [dependencies]
-deputy-core = { path = "../deputy-core", version = "0.2.0" }
-deputy-store = { path = "../deputy-store", version = "0.2.0" }
-deputy-id = { path = "../deputy-id", version = "0.2.0" }
-deputy-ecosystem = { path = "../deputy-ecosystem", version = "0.2.0" }
-deputy-acquire = { path = "../deputy-acquire", version = "0.2.0" }
-deputy-analyze = { path = "../deputy-analyze", version = "0.2.0" }
-deputy-scan = { path = "../deputy-scan", version = "0.2.0" }
-deputy-deploy = { path = "../deputy-deploy", version = "0.2.0" }
-# SpaceDB Layer 5 — signed, scoped, expiring, revocable capabilities (P-256, mID family) that
-# gate every operation for humans AND AI agents.
-spacedb-access = "=0.1.0"
+deputy-core = { path = "../deputy-core", version = "0.3.0" }
+deputy-store = { path = "../deputy-store", version = "0.3.0" }
+deputy-id = { path = "../deputy-id", version = "0.3.0" }
+deputy-ecosystem = { path = "../deputy-ecosystem", version = "0.3.0" }
+deputy-acquire = { path = "../deputy-acquire", version = "0.3.0" }
+deputy-analyze = { path = "../deputy-analyze", version = "0.3.0" }
+deputy-scan = { path = "../deputy-scan", version = "0.3.0" }
+deputy-deploy = { path = "../deputy-deploy", version = "0.3.0" }
+# SpaceDB SDK (library: allocator opted out) re-exports Layer 5 capabilities.
+# mata-cap is the typed API-first authorize chokepoint every Deputy op also hits.
+spacedb-sdk = { workspace = true }
+spacedb-access = { workspace = true }
+mata-cap = { workspace = true }
 axum = "0.7"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "sync"] }
 tower-http = { version = "0.6", features = ["cors"] }
-# GitHub REST client (list/acquire the user's repos via a fine-grained PAT). rustls, no OpenSSL.
+# GitHub REST client (list/acquire the user's repos via OAuth or a PAT). rustls, no OpenSSL.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # RUSTSEC advisory-db importer: download + decompress the tarball, parse the TOML frontmatter.
 flate2 = "1"

@@ -11,7 +11,7 @@ keywords = ["supply-chain", "dependencies", "analysis", "risk", "security"]
 categories = ["development-tools"]
 
 [dependencies]
-deputy-core = { path = "../deputy-core", version = "0.2.0" }
+deputy-core = { path = "../deputy-core", version = "0.3.0" }
 serde = { workspace = true }
 # Cargo.lock + each crate's Cargo.toml are TOML.
 toml = "0.8"

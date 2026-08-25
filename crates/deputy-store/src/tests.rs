@@ -411,6 +411,7 @@ fn metadata_values_are_encrypted_at_rest_by_spacedb() {
             }]),
         )
         .unwrap();
+    drop(vault); // release the redb file lock so we can read the bytes on Windows
 
     // The on-disk SpaceDB file must contain only ciphertext for the value — the marker, which
     // lives inside the encrypted row, must not appear in plaintext.
@@ -422,5 +423,6 @@ fn metadata_values_are_encrypted_at_rest_by_spacedb() {
         "metadata value leaked in plaintext — SpaceDB encryption is not active"
     );
     // Sanity: it still round-trips through decryption.
+    let vault = Vault::unlock(dir.path(), PW).unwrap();
     assert!(!vault.get_verdict(&artifact).unwrap().unwrap().is_clean());
 }

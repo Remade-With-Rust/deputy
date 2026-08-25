@@ -1,0 +1,15 @@
+[package]
+name = "deputy-alloc"
+description = "The rusty_alloc seam — one pin, declared only in Deputy deliverables."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["allocator", "rusty_alloc", "mimalloc"]
+categories = ["memory-management"]
+
+[dependencies]
+rusty_alloc = { workspace = true }
+rusty_alloc-api = { workspace = true }

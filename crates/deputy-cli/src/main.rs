@@ -5,6 +5,9 @@
 //! (the API-first surface in `deputy-api` arrives in M7).
 #![forbid(unsafe_code)]
 
+#[global_allocator]
+static ALLOC: deputy_alloc::Alloc = deputy_alloc::Alloc;
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -184,6 +187,7 @@ struct SyncArgs {
 }
 
 fn main() -> ExitCode {
+    deputy_alloc::configure(deputy_alloc::Profile::ShortLived);
     match Cli::parse().command {
         Command::Discover { source } => run_discover(&source),
         Command::Acquire { source, vault } => run_acquire(&source, vault),
@@ -337,6 +341,7 @@ fn run_restore(from: PathBuf, vault_dir: Option<PathBuf>) -> ExitCode {
 }
 
 fn run_serve(vault_dir: Option<PathBuf>, port: u16, no_mid: bool) -> ExitCode {
+    deputy_alloc::configure(deputy_alloc::Profile::LongLived);
     let passphrase = match std::env::var("DEPUTY_PASSPHRASE") {
         Ok(p) if !p.is_empty() => p,
         _ => return fail("set DEPUTY_PASSPHRASE to the vault passphrase"),

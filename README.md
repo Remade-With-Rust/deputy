@@ -51,16 +51,16 @@ Deputy is the personal backstop:
 - **Advisory scanning** — checks pinned versions against the RUSTSEC database with computed
   CVSS v3.1 severity and correct multi-branch "not-patched" matching, plus integrity and
   **substitution** detection (same `name@version`, different hash).
-- **Supply-chain analytics** — per-dependency language breakdown and risk signals: build
-  scripts, proc-macros, `unsafe`, native/FFI surface.
-- **Social Heartbeat** — tracks scanned dependencies for newer releases and surfaces
-  advisories that have landed publicly on the version you're pinned to.
+- **Dep Analytics** — language mix across crate sources (bars + per-crate languages/lines).
+- **New Versions** — tracks scanned dependencies for newer releases and public advisories,
+  then hold anything not ready and redeploy the rest to production.
 - **Staging → production** — promote scanned-clean dependencies into `prod` with hash-chained,
   mID-attributed receipts; hold anything not ready in staging.
 - **Offline-coverage check** — reports exactly which dependencies are safely archived vs. gaps
   (git deps, non-crates.io registries, failed acquisitions).
 - **mID authentication** — sign in with [MATA Sovereign ID](https://github.com/Remade-With-Rust/sovereign-id);
-  every mutating operation is gated by a verified identity and a scoped capability.
+  every mutating operation is gated by a verified identity, a scoped SpaceDB capability, and a
+  typed [mata-cap](https://crates.io/crates/mata-cap) `deputy:<action>` grant.
 - **Three surfaces** — an HTTP API (API-first), a `deputy` CLI, and a Dioxus web (WASM) UI.
 
 ## Quick start
@@ -74,8 +74,9 @@ cargo test --workspace
 deputy serve --no-mid --port 7878
 ```
 
-Then connect a GitHub fine-grained PAT, select repositories, and download + analyze them into
-a named folder. See [docs/](docs/) for the full workflow.
+Then click **Connect with GitHub** — Deputy opens a browser tab for you to approve access
+(no personal access token). Select repositories and download + analyze them into a named
+folder. See [docs/](docs/) for the full workflow.
 
 ## How it works
 
@@ -103,6 +104,7 @@ Deputy is a Cargo workspace. Each library crate is published independently; inst
 | Crate | Role |
 |---|---|
 | [`deputy-core`](crates/deputy-core) | Domain types, the artifact state machine, trait contracts. No I/O. |
+| `deputy-alloc` | rusty_alloc seam. Deliverables declare `#[global_allocator]` here; libraries never do. |
 | [`deputy-crypto`](crates/deputy-crypto) | Argon2id key derivation + AES-256-GCM sealing. |
 | [`deputy-store`](crates/deputy-store) | The content-addressed dirty/prod vault + encrypted metadata DB. |
 | [`deputy-id`](crates/deputy-id) | MATA mID verification and Deputy's session/identity model. |

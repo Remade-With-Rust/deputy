@@ -131,11 +131,13 @@ existing seam, so the rest of Deputy is unaffected:
 
 | Layer | SpaceDB crate | In Deputy | Surface |
 |---|---|---|---|
-| **0** storage | `spacedb-store` | the durable, transactional metadata KV (redb engine) | — |
-| **1+3** CRDT/consistency | `spacedb-crdt` | metadata as LWW registers in a `CrdtDoc`; conflict-free **multi-device sync** (export/import; new entries union, same key resolves LWW), the blob **sealed under the mID-bound sync key** | `deputy sync export/import` |
-| **2 cold** durability | `spacedb-durability` | Reed-Solomon erasure-coded **vault snapshots** (k-of-n recovery; survives lost shards) | `deputy snapshot` / `deputy restore` |
-| **2 hot** replica | `spacedb-replica` | the delta primitive (`state_vector`/`encode_update_since`) is in place; the **live always-on transport** is the documented networked extension (a daemon, not the CLI's model) | — |
-| **5** access | `spacedb-access` | every API op gated by a **signed, scoped, expiring, revocable capability** (P-256, mID family) — for humans AND AI agents | `DeputyService::grant` / `revoke` |
+| **0** storage | `spacedb-store` 0.5 | the durable, transactional metadata KV (redb engine) | — |
+| **1+3** CRDT/consistency | `spacedb-crdt` 0.5 | metadata as LWW registers in a `CrdtDoc`; conflict-free **multi-device sync** (export/import; new entries union, same key resolves LWW), the blob **compressed with rusty_zstd then sealed under the mID-bound sync key** | `deputy sync export/import` |
+| **2 cold** durability | `spacedb-durability` 0.5 | Reed-Solomon erasure-coded **vault snapshots** (k-of-n recovery; survives lost shards). Snapshots are oxicode-encoded and zstd-compressed. The [`ShardStore`] seam (`DiskShardStore`) is what disco fills with mesh placement. | `deputy snapshot` / `deputy restore` |
+| **2 hot** replica | `spacedb-replica` 0.5 | anti-entropy over the [`Transport`] seam; Deputy ships the in-process transport for tests. Disco fills the seam with iroh + relay. | — |
+| **5** access | `spacedb-access` 0.5 (+ `mata-cap`) | every API op gated by a **signed, scoped, expiring, revocable capability** (P-256, mID family) **and** a typed `deputy:<read\|write\|compute>` mata-cap grant — for humans AND AI agents | `DeputyService::grant` / `revoke` |
+| **6** settlement | `spacedb-meter` 0.5 | [`LocalSettlement`] prices usage locally; disco fills [`Settlement`] with Iron Bank / `$MATA` | — |
+| **SDK** | `spacedb-sdk` 0.5 (`default-features = false`) | the composed developer surface (schema + offline replica). Libraries opt out of the SDK's allocator; `deputy-alloc` installs rusty_alloc in deliverables. | — |
 
 Encryption boundaries: metadata rows are encrypted by SpaceDB's per-collection DEK (KEK =
 `K_meta`, §2/§4). Snapshots archive the already-encrypted vault files (no passphrase needed).

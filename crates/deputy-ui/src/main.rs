@@ -11,14 +11,21 @@
 //!
 //! Either way, start the API first with `deputy serve`. With no platform feature on a non-wasm
 //! host the crate is just a stub `main`, so `cargo build --workspace` stays light and green.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+
+#[global_allocator]
+static ALLOC: deputy_alloc::Alloc = deputy_alloc::Alloc;
 
 #[cfg(any(target_arch = "wasm32", feature = "desktop"))]
 mod app;
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
+mod chrome;
+
 // Web (WASM) entry point.
 #[cfg(target_arch = "wasm32")]
 fn main() {
+    deputy_alloc::configure(deputy_alloc::Profile::LongLived);
     app::launch();
 }
 
@@ -28,12 +35,16 @@ fn main() {
 // `deputy serve` needed. `dioxus::launch` opens a desktop window because `dioxus/desktop` is on.
 #[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
 fn main() {
+    deputy_alloc::configure(deputy_alloc::Profile::LongLived);
     // Deep-link entry: if the OS launched us with a `deputy://mid-callback#...` URL (the mID
     // sign-in result) and an instance is already running, just forward the token to its embedded
     // API and exit — don't start a second window or try to re-bind the API port. When the app is
     // already running, the OS instead delivers this URL as a runtime `Event::Opened` (handled in
     // app::launch), so this branch only fires for a cold launch from the deep link.
-    if let Some(url) = std::env::args().nth(1).filter(|a| a.starts_with("deputy://")) {
+    if let Some(url) = std::env::args()
+        .nth(1)
+        .filter(|a| a.starts_with("deputy://"))
+    {
         eprintln!("deputy-ui: forwarding mID callback to the running instance");
         app::handle_mid_callback(&url);
         return;
@@ -73,7 +84,11 @@ fn main() {
     eprintln!(
         "deputy-ui: vault {} — embedded API on http://{addr} ({})",
         dir.display(),
-        if embed { "embed: passphrase-only" } else { "mID-gated (sign in to unlock)" }
+        if embed {
+            "embed: passphrase-only"
+        } else {
+            "mID-gated (sign in to unlock)"
+        }
     );
     std::thread::spawn(move || {
         if let Err(e) = deputy_api::serve_blocking(service, addr) {

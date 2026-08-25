@@ -19,6 +19,7 @@
 mod artifacts;
 mod audit;
 mod error;
+mod mesh;
 mod meta;
 mod snapshot;
 mod sync;
@@ -29,6 +30,7 @@ mod tests;
 
 pub use audit::AuditEntry;
 pub use error::{Result, StoreError};
+pub use mesh::{local_settlement, settle_local_use, DiskShardStore};
 pub use snapshot::{restore, snapshot, RestoreInfo, SnapshotInfo};
 pub use sync::{derive_sync_key, export_metadata, import_metadata, SyncKey, SyncReport};
 pub use vault::Vault;

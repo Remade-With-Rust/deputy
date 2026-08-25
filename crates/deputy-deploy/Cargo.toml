@@ -11,8 +11,8 @@ keywords = ["supply-chain", "deploy", "gate", "vendoring", "security"]
 categories = ["development-tools::cargo-plugins"]
 
 [dependencies]
-deputy-core = { path = "../deputy-core", version = "0.2.0" }
-deputy-store = { path = "../deputy-store", version = "0.2.0" }
+deputy-core = { path = "../deputy-core", version = "0.3.0" }
+deputy-store = { path = "../deputy-store", version = "0.3.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Extract prod .crate tarballs into a Cargo vendor tree (pure Rust, no C).

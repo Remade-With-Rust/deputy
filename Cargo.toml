@@ -7,7 +7,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -15,12 +15,38 @@ repository = "https://github.com/Remade-With-Rust/deputy"
 authors = ["MATA Network"]
 
 # Centrally-pinned versions. Declaring them here downloads nothing until a crate
-# actually depends on one (via `{ workspace = true }`). Populated as milestones need them.
+# actually depends on one (via `{ workspace = true }`).
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# Identity + access (mID family).
+mata-cap = "0.1"
+
+# Storage — SpaceDB 0.5. Libraries MUST take spacedb-sdk with default-features = false
+# so they do not install rusty_alloc into every consumer.
+spacedb-sdk = { version = "0.5.2", default-features = false }
+spacedb-access = "0.5.2"
+spacedb-store = "0.5.2"
+spacedb-crdt = "0.5.2"
+spacedb-durability = "0.5.2"
+spacedb-replica = "0.5.2"
+spacedb-meter = "0.5.2"
+
+# Allocator seam (deliverables only). Pin exactly what we verified.
+rusty_alloc = "=1.1.4"
+rusty_alloc-api = "=1.1.4"
+
+# Compression + internal wire format.
+rusty_zstd = "0.1"
+oxicode = { version = "0.2", features = ["serde"] }
+
+# UI chrome. Libraries/UI opt out of the crates' default rusty_alloc install.
+rusty_symbols = { version = "0.1", default-features = false }
+rusty_tokens = { version = "0.2", default-features = false, features = ["css"] }
+rusty_a11y = { version = "0.2", default-features = false }
 
 [profile.release]
 # Security/perf posture for shipped binaries; revisit during M8 hardening.

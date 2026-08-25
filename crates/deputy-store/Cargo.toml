@@ -11,17 +11,20 @@ keywords = ["vault", "encryption", "storage", "content-addressed", "security"]
 categories = ["cryptography", "database-implementations"]
 
 [dependencies]
-deputy-core = { path = "../deputy-core", version = "0.2.0" }
-deputy-crypto = { path = "../deputy-crypto", version = "0.2.0" }
-# SpaceDB Layer 0 (Remade With Rust): the durable, transactional KV engine. Replaces our direct
-# redb dependency — redb is now an internal engine detail of SpaceDB. See docs/STORAGE.md §4.
-# Exact pins (`=`): Deputy practises its own thesis and freezes the trust-base versions.
-spacedb-store = "=0.1.0"
-# SpaceDB Layer 2 (cold): Reed-Solomon erasure-coded vault snapshots (k-of-n recovery).
-spacedb-durability = "=0.1.0"
-# SpaceDB Layer 1 — the Y-CRDT document model, for conflict-free multi-device metadata sync.
-spacedb-crdt = "=0.1.0"
-postcard = { version = "1", features = ["use-std"] }
+deputy-core = { path = "../deputy-core", version = "0.3.0" }
+deputy-crypto = { path = "../deputy-crypto", version = "0.3.0" }
+# SpaceDB 0.5 (Remade With Rust). The SDK is the developer surface; libraries opt out of
+# its default rusty_alloc so deliverables own the allocator. See docs/STORAGE.md §4 / §7.
+spacedb-sdk = { workspace = true }
+spacedb-store = { workspace = true }
+spacedb-crdt = { workspace = true }
+spacedb-durability = { workspace = true }
+spacedb-replica = { workspace = true }
+spacedb-meter = { workspace = true }
+# Internal wire format (never a public API — those stay JSON).
+oxicode = { workspace = true }
+# Compress snapshot/sync payloads before erasure-coding / encryption.
+rusty_zstd = { workspace = true }
 sha2 = "0.10"
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -43,8 +43,9 @@ Opening a service is authenticated **and** encrypted, by two separate mechanisms
 
 Every mutating operation is additionally gated by a scoped
 [SpaceDB](https://github.com/Remade-With-Rust/spacedb) Layer 5 capability — signed, scoped,
-expiring, revocable — which is what makes handing an *agent* narrow access a bounded grant rather
-than a shared secret.
+expiring, revocable — **and** a typed [`mata-cap`](https://crates.io/crates/mata-cap)
+`deputy:<action>` grant, which is what makes handing an *agent* narrow access a bounded grant
+rather than a shared secret.
 
 ## Contents
 

@@ -8,6 +8,29 @@ Conventional Commits.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-25
+
+### Added
+
+- **`deputy-alloc`** — the rusty_alloc seam for CLI and desktop deliverables (libraries never
+  install a global allocator).
+- **GitHub browser OAuth** — Connect with GitHub opens a browser; no personal access token
+  required. Device-flow plus `gh` CLI fallback.
+- **Workspace-scoped dashboard** — Overview, Scan, Analytics, New Versions, and Production
+  follow the selected repo, group, or all-workspaces view.
+- **Group version checks** composed from each child repo's cache, so a group is not stuck on a
+  stale aggregate.
+- **Dep Analytics** as a language-mix visualization (bars + per-crate languages/lines).
+- **New Versions** tab — only crates with an update; check the ones to migrate, Check all, then
+  Redeploy. Promote accepts an opt-in `only` list of name@version (stages the new release if
+  needed) instead of promoting the whole lockfile minus a hold list.
+
+### Changed
+
+- Folder listings hydrate lockfile counts when a stored summary was zeroed.
+- Staging → production from New Versions promotes the **checked new versions**, not every other
+  crate in the vault.
+
 ## [0.2.0] - 2026-08-10
 
 ### Added

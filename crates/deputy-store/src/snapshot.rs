@@ -1,15 +1,16 @@
 //! Erasure-coded vault snapshots (SpaceDB Layer 2, cold path).
 //!
-//! A snapshot archives the vault's already-encrypted files into one blob, Reed-Solomon
-//! erasure-codes it into `data + parity` shards, and writes the manifest + shards out. Up to
-//! `parity` shards can be lost and the vault still reconstructs from any `data` of them — the
-//! basis for durable, mesh-spread backups. Snapshots operate on ciphertext, so they need no
-//! passphrase.
+//! A snapshot archives the vault's already-encrypted files into one blob, compresses
+//! it with rusty_zstd, Reed-Solomon erasure-codes it into `data + parity` shards, and
+//! writes the manifest + shards out (oxicode on the internal wire). Up to `parity`
+//! shards can be lost and the vault still reconstructs from any `data` of them.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use spacedb_durability::{encode_snapshot, reconstruct_snapshot, Manifest, Shard};
 
 use crate::error::{Result, StoreError};
@@ -30,8 +31,28 @@ pub struct RestoreInfo {
     pub files_restored: usize,
 }
 
+const ZSTD_LEVEL: i32 = 3;
+
 fn snap_err(e: impl std::fmt::Display) -> StoreError {
     StoreError::Snapshot(e.to_string())
+}
+
+fn wire_encode<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    oxicode::serde::encode_to_vec(value, oxicode::config::standard()).map_err(snap_err)
+}
+
+fn wire_decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    let (value, _) =
+        oxicode::serde::decode_from_slice(bytes, oxicode::config::standard()).map_err(snap_err)?;
+    Ok(value)
+}
+
+fn pack(bytes: &[u8]) -> Result<Vec<u8>> {
+    rusty_zstd::compress(bytes, ZSTD_LEVEL).map_err(snap_err)
+}
+
+fn unpack(bytes: &[u8]) -> Result<Vec<u8>> {
+    rusty_zstd::decompress(bytes).map_err(snap_err)
 }
 
 /// Snapshot the vault at `vault_root` into `out_dir` as `data_shards + parity_shards` shards
@@ -43,17 +64,15 @@ pub fn snapshot(
     parity_shards: usize,
 ) -> Result<SnapshotInfo> {
     let archive = archive_dir(vault_root)?;
-    let blob = postcard::to_allocvec(&archive).map_err(snap_err)?;
+    let encoded = wire_encode(&archive)?;
+    let blob = pack(&encoded)?;
     let (manifest, shards) =
         encode_snapshot(&blob, data_shards, parity_shards).map_err(snap_err)?;
 
     fs::create_dir_all(out_dir)?;
-    fs::write(
-        out_dir.join("manifest.bin"),
-        postcard::to_allocvec(&manifest).map_err(snap_err)?,
-    )?;
+    fs::write(out_dir.join("manifest.bin"), wire_encode(&manifest)?)?;
     for shard in &shards {
-        let bytes = postcard::to_allocvec(shard).map_err(snap_err)?;
+        let bytes = wire_encode(shard)?;
         fs::write(out_dir.join(format!("shard-{:03}.bin", shard.index)), bytes)?;
     }
 
@@ -69,8 +88,7 @@ pub fn snapshot(
 /// vault). Reconstructs from whatever shards are present, as long as at least `data_shards`
 /// remain.
 pub fn restore(snapshot_dir: &Path, vault_root: &Path) -> Result<RestoreInfo> {
-    let manifest: Manifest =
-        postcard::from_bytes(&fs::read(snapshot_dir.join("manifest.bin"))?).map_err(snap_err)?;
+    let manifest: Manifest = wire_decode(&fs::read(snapshot_dir.join("manifest.bin"))?)?;
 
     let mut shards = Vec::new();
     for entry in fs::read_dir(snapshot_dir)? {
@@ -80,13 +98,13 @@ pub fn restore(snapshot_dir: &Path, vault_root: &Path) -> Result<RestoreInfo> {
             .and_then(|n| n.to_str())
             .is_some_and(|n| n.starts_with("shard-") && n.ends_with(".bin"));
         if is_shard {
-            let shard: Shard = postcard::from_bytes(&fs::read(&path)?).map_err(snap_err)?;
-            shards.push(shard);
+            shards.push(wire_decode::<Shard>(&fs::read(&path)?)?);
         }
     }
 
     let blob = reconstruct_snapshot(&manifest, &shards).map_err(snap_err)?;
-    let archive: BTreeMap<String, Vec<u8>> = postcard::from_bytes(&blob).map_err(snap_err)?;
+    let encoded = unpack(&blob)?;
+    let archive: BTreeMap<String, Vec<u8>> = wire_decode(&encoded)?;
     let files_restored = archive.len();
     unarchive_dir(&archive, vault_root)?;
 

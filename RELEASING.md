@@ -16,7 +16,7 @@ workspace is publish-ready — no path or git dependencies remain.
 3. After the first publish, hand each crate to the org team so it is not tied to one personal
    account:
    ```sh
-   for c in deputy-core deputy-crypto deputy-id deputy-ecosystem deputy-store \
+   for c in deputy-alloc deputy-core deputy-crypto deputy-id deputy-ecosystem deputy-store \
             deputy-analyze deputy-scan deputy-acquire deputy-deploy deputy-api deputy-cli; do
      cargo owner --add github:Remade-With-Rust:owners "$c"
    done
@@ -27,17 +27,18 @@ workspace is publish-ready — no path or git dependencies remain.
 A crate cannot publish until every dependency is already on crates.io, so publish in
 dependency order:
 
-1. `deputy-core`
-2. `deputy-crypto`
-3. `deputy-id`
-4. `deputy-ecosystem`
-5. `deputy-store`
-6. `deputy-analyze`
-7. `deputy-scan`
-8. `deputy-acquire`
-9. `deputy-deploy`
-10. `deputy-api`
-11. `deputy-cli` — installs the `deputy` binary (`cargo install deputy-cli`)
+1. `deputy-alloc` — first publish; allocator seam for deliverables
+2. `deputy-core`
+3. `deputy-crypto`
+4. `deputy-id`
+5. `deputy-ecosystem`
+6. `deputy-store`
+7. `deputy-analyze`
+8. `deputy-scan`
+9. `deputy-acquire`
+10. `deputy-deploy`
+11. `deputy-api`
+12. `deputy-cli` — installs the `deputy` binary (`cargo install deputy-cli`)
 
 `deputy-ui` is a Dioxus **wasm application**, not a reusable library, and is intentionally
 **not** published (`publish = false`).
@@ -64,5 +65,5 @@ in dependency order. After the first manual publish you should not need `cargo p
 
 ## Versioning
 
-All crates currently share `version = "0.1.0"` via `[workspace.package]`. Pre-1.0, a minor bump
+All crates currently share a version via `[workspace.package]`. Pre-1.0, a minor bump
 (`0.x`) may carry breaking changes; document them in `CHANGELOG.md`.

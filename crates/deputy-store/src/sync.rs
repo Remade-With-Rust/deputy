@@ -63,7 +63,9 @@ fn doc_from_metadata(vault: &Vault) -> Result<CrdtDoc> {
 /// user's devices via [`import_metadata`] under the same [`SyncKey`].
 pub fn export_metadata(vault: &Vault, sync: &SyncKey) -> Result<Vec<u8>> {
     let update = doc_from_metadata(vault)?.encode_full();
-    seal(sync, &update, SYNC_AAD).map_err(StoreError::from)
+    // Compress, then encrypt — ciphertext is incompressible.
+    let packed = rusty_zstd::compress(&update, 3).map_err(crdt_err)?;
+    seal(sync, &packed, SYNC_AAD).map_err(StoreError::from)
 }
 
 /// Merge a sealed CRDT update (from [`export_metadata`] on another device) into this vault.
@@ -71,7 +73,8 @@ pub fn export_metadata(vault: &Vault, sync: &SyncKey) -> Result<Vec<u8>> {
 /// passphrase + mID. Convergent: new entries are added, a key written on both is resolved by
 /// the CRDT.
 pub fn import_metadata(vault: &Vault, sealed_update: &[u8], sync: &SyncKey) -> Result<SyncReport> {
-    let update = open(sync, sealed_update, SYNC_AAD)?;
+    let packed = open(sync, sealed_update, SYNC_AAD)?;
+    let update = rusty_zstd::decompress(&packed).map_err(crdt_err)?;
 
     // Merge the remote update into a doc seeded with our current metadata.
     let doc = doc_from_metadata(vault)?;

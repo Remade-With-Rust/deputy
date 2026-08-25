@@ -32,11 +32,24 @@ jobs:
           -p deputy-core -p deputy-crypto -p deputy-store -p deputy-id
           -p deputy-api -p deputy-cli -p deputy-ui -p deputy-acquire
           -p deputy-analyze -p deputy-scan -p deputy-deploy -p deputy-ecosystem
+          -p deputy-alloc
           -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --workspace --all-features
+
+  dogfood:
+    name: deputy discover (self)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the deputy CLI
+        run: cargo build -p deputy-cli
+      - name: Discover this repo's lockfile pins
+        run: ./target/debug/deputy discover .
 
   deny:
     name: cargo-deny (license + advisories)

@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod github_oauth;
 mod http;
 mod rustsec;
 mod service;
@@ -27,7 +28,9 @@ pub use service::{DeputyService, LOCAL_DID};
 pub use deputy_id::{verify, Session, VerifyParams};
 
 // Re-export the SpaceDB Layer 5 capability vocabulary (for granting agent access).
+// The SDK is the house storage surface; the types themselves live in spacedb-access.
 pub use spacedb_access::{Capability, Did, Identity, Ops, Scope, SignedCapability};
+pub use spacedb_sdk::Database as SpaceDb;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

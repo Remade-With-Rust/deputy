@@ -143,7 +143,10 @@ fn app_state_roundtrips_and_persists_encrypted() {
     let blob = br#"[{"label":"acct","token":"ghp_secrettoken","owner":"org"}]"#;
     vault.put_app_state("github_connections", blob).unwrap();
     assert_eq!(
-        vault.get_app_state("github_connections").unwrap().as_deref(),
+        vault
+            .get_app_state("github_connections")
+            .unwrap()
+            .as_deref(),
         Some(&blob[..])
     );
 
@@ -151,7 +154,10 @@ fn app_state_roundtrips_and_persists_encrypted() {
     drop(vault);
     let reopened = Vault::unlock(dir.path(), PW).unwrap();
     assert_eq!(
-        reopened.get_app_state("github_connections").unwrap().as_deref(),
+        reopened
+            .get_app_state("github_connections")
+            .unwrap()
+            .as_deref(),
         Some(&blob[..])
     );
 
@@ -159,7 +165,10 @@ fn app_state_roundtrips_and_persists_encrypted() {
     let mut leaked = false;
     for entry in walkdir(dir.path()) {
         if let Ok(bytes) = std::fs::read(&entry) {
-            if bytes.windows(b"ghp_secrettoken".len()).any(|w| w == b"ghp_secrettoken") {
+            if bytes
+                .windows(b"ghp_secrettoken".len())
+                .any(|w| w == b"ghp_secrettoken")
+            {
                 leaked = true;
             }
         }

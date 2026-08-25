@@ -34,9 +34,8 @@ impl DiskShardStore {
 
 impl ShardStore for DiskShardStore {
     fn put(&self, hash: &[u8; 32], bytes: &[u8]) -> DurabilityResult<()> {
-        fs::write(self.path(hash), bytes).map_err(|e| {
-            spacedb_durability::DurabilityError::Store(e.to_string())
-        })
+        fs::write(self.path(hash), bytes)
+            .map_err(|e| spacedb_durability::DurabilityError::Store(e.to_string()))
     }
 
     fn get(&self, hash: &[u8; 32]) -> DurabilityResult<Option<Vec<u8>>> {
@@ -52,9 +51,8 @@ impl ShardStore for DiskShardStore {
     fn delete(&self, hash: &[u8; 32]) -> DurabilityResult<()> {
         let path = self.path(hash);
         if path.exists() {
-            fs::remove_file(path).map_err(|e| {
-                spacedb_durability::DurabilityError::Store(e.to_string())
-            })?;
+            fs::remove_file(path)
+                .map_err(|e| spacedb_durability::DurabilityError::Store(e.to_string()))?;
         }
         Ok(())
     }
@@ -77,15 +75,7 @@ pub fn settle_local_use(
     did: &str,
     byte_seconds: u128,
 ) -> Result<spacedb_meter::Settled, spacedb_meter::MeterError> {
-    let claim = UsageClaim::new(
-        did,
-        did,
-        Usage::Storage {
-            byte_seconds,
-        },
-        0,
-        1,
-    );
+    let claim = UsageClaim::new(did, did, Usage::Storage { byte_seconds }, 0, 1);
     settlement.settle(&claim)
 }
 
@@ -102,7 +92,10 @@ mod tests {
         let store = DiskShardStore::open(dir.path()).unwrap();
         let hash = [0x11u8; 32];
         store.put(&hash, b"shard-bytes").unwrap();
-        assert_eq!(store.get(&hash).unwrap().as_deref(), Some(&b"shard-bytes"[..]));
+        assert_eq!(
+            store.get(&hash).unwrap().as_deref(),
+            Some(&b"shard-bytes"[..])
+        );
         store.delete(&hash).unwrap();
         assert!(store.get(&hash).unwrap().is_none());
     }
@@ -117,12 +110,8 @@ mod tests {
     #[test]
     fn local_settlement_prices_a_claim() {
         let mut settlement = local_settlement();
-        let receipt = settle_local_use(
-            &mut settlement,
-            "did:mata:owner",
-            (1u128 << 30) * 2_592_000,
-        )
-        .unwrap();
+        let receipt =
+            settle_local_use(&mut settlement, "did:mata:owner", (1u128 << 30) * 2_592_000).unwrap();
         assert_eq!(receipt.settles_to_did, "did:mata:owner");
         // 1 GiB held for a 30-day month at 1 micro-$MATA / GiB-month prices to 1.
         assert_eq!(settlement.tallied("did:mata:owner"), 1);

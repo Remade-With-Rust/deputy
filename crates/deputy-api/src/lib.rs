@@ -4,6 +4,10 @@
 //! in-process capability layer — the CLI, the HTTP server, and the UI all drive the same
 //! methods. [`serve`] exposes it as a localhost HTTP/JSON server.
 //!
+//! Folder ops include [`DeputyService::send_upgrade_plans`] (`POST /folders/upgrade-plans`):
+//! commit `docs/plans/deputy-upgrades.md` into each GitHub repo, listing lockfile pins whose
+//! latest crates.io release is at least a week old.
+//!
 //! Opening the service is **mID-gated**: a valid [`deputy_id::Session`] authorizes the vault
 //! unlock, while the passphrase derives the at-rest key (`docs/AUTH.md` §8) — the
 //! session↔unlock composition deferred from M2 lands here.
@@ -20,7 +24,7 @@ mod tests;
 
 pub use error::ApiError;
 pub use http::router;
-pub use service::{DeputyService, LOCAL_DID};
+pub use service::{DeputyService, UpgradePlansReport, LOCAL_DID};
 
 // Re-export the identity types + verification entry point callers need to open a service. With
 // mID active, build a `Session` by verifying a wallet token via [`verify`] + [`VerifyParams`];

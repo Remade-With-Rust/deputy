@@ -115,7 +115,19 @@ State: `Scanned → Promoted` (or `→ Quarantined`).
 
 State: `Promoted → Deployed`.
 
-## 7. End-to-end state machine
+## 7. Upgrade plans (GitHub write, not a vault transition)
+
+**Send Plans** (`POST /folders/upgrade-plans`) commits `docs/plans/deputy-upgrades.md` into
+each GitHub repo in the current workspace. GitHub creates `docs/plans/` if it is missing.
+This is a documentation write (Contents API), **not** a `Promoted` → `Deployed` edge and not
+Redeploy-to-production.
+
+Each file lists **that repo's** `Cargo.lock` pins whose latest crates.io release is at least
+**7 days old** — so a just-published crate can settle before anyone is asked to bump it.
+Local ingest names are skipped. Group / all-workspaces views write one file per child repo,
+never the aggregate table into every repository.
+
+## 8. End-to-end state machine
 
 ```
 Discovered ─▶ Acquired ─▶ Analyzed ─▶ Scanned ─┬─ clean ─▶ Promoted ─▶ Deployed
@@ -125,7 +137,7 @@ Discovered ─▶ Acquired ─▶ Analyzed ─▶ Scanned ─┬─ clean ─▶
 Every edge is mID-gated, content-addressed, and provenance-logged. Only `Promoted` artifacts
 are eligible for `Deployed`, and the gate re-checks at deploy time.
 
-## 8. Generalizing beyond Cargo
+## 9. Generalizing beyond Cargo
 
 To add npm: implement `DepEcosystem` reading `package-lock.json` (pins + integrity hashes),
 fetch tarballs, verify `integrity` (SRI), materialize via a vendored registry / `.npmrc`. No

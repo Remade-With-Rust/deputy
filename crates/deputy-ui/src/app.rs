@@ -1311,14 +1311,16 @@ fn Dashboard(session: Session, sess: Signal<Option<Session>>) -> Element {
             }
             match post_json::<Option<CombinedScanReport>>("/folders/scan/last", &body).await {
                 Ok(Some(r)) => {
-                    if current.read().as_ref().map(Workspace::encode).as_deref() == Some(key.as_str())
+                    if current.read().as_ref().map(Workspace::encode).as_deref()
+                        == Some(key.as_str())
                         && !(scan_active() && scan_req_key() == key)
                     {
                         scan_report.set(Some(Ok(r)));
                     }
                 }
                 Ok(None) | Err(_) => {
-                    if current.read().as_ref().map(Workspace::encode).as_deref() == Some(key.as_str())
+                    if current.read().as_ref().map(Workspace::encode).as_deref()
+                        == Some(key.as_str())
                         && !(scan_active() && scan_req_key() == key)
                     {
                         scan_report.set(None);
@@ -1454,8 +1456,7 @@ fn Dashboard(session: Session, sess: Signal<Option<Session>>) -> Element {
                     get_json::<Option<HeartbeatProgressView>>("/folders/heartbeat/progress").await
                 {
                     if vc_filter() == poll_key
-                        && Workspace::decode(&poll_key)
-                            .is_some_and(|w| report_is_for(&w, &p.name))
+                        && Workspace::decode(&poll_key).is_some_and(|w| report_is_for(&w, &p.name))
                     {
                         vc_done.set(p.done);
                         vc_total.set(p.total);
@@ -2377,7 +2378,11 @@ fn VersionControlPanel(repo_refs: Vec<(String, RepoSummary)>) -> Element {
     } else {
         (job.loading)() || !scoped
     };
-    let done = if filtered { (job.vc_done)() } else { (job.done)() };
+    let done = if filtered {
+        (job.vc_done)()
+    } else {
+        (job.done)()
+    };
     let total = if filtered {
         (job.vc_total)()
     } else {
@@ -3146,10 +3151,7 @@ fn InfrastructureTab() -> Element {
     let mut confirming = use_signal(|| None::<String>);
     let mut busy = use_signal(|| false);
     let downloading = (job.active)();
-    let refresh_label = current
-        .as_ref()
-        .map(Workspace::label)
-        .unwrap_or_default();
+    let refresh_label = current.as_ref().map(Workspace::label).unwrap_or_default();
     let can_refresh = current.is_some() && !folders.is_empty() && !downloading;
     let refresh_hint = match current.as_ref() {
         Some(ws) if ws.is_all() => {
@@ -3345,7 +3347,9 @@ fn ScanTab() -> Element {
         None => "RUSTSEC: loading…".to_string(),
     };
     let last_scanned = match (&current, &*job.report.read()) {
-        (Some(ws), Some(Ok(r))) if report_is_for(ws, &r.scan.name) => format_scanned_at(r.scanned_at),
+        (Some(ws), Some(Ok(r))) if report_is_for(ws, &r.scan.name) => {
+            format_scanned_at(r.scanned_at)
+        }
         _ => String::new(),
     };
 
@@ -3770,6 +3774,7 @@ fn HeartbeatTab() -> Element {
     let job = use_context::<OverviewJob>();
     let mut selected = use_signal(HashSet::<String>::new);
     let mut pushing = use_signal(|| false);
+    let mut sending = use_signal(|| false);
     let mut push_msg = use_signal(|| None::<String>);
     let mut prod = use_context::<ProductionJob>();
     let current = ctx.current.read().clone();
@@ -3800,7 +3805,9 @@ fn HeartbeatTab() -> Element {
     };
     let all_keys: Vec<String> = updates.iter().filter_map(update_key).collect();
     let all_checked = !all_keys.is_empty() && all_keys.iter().all(|k| selected.read().contains(k));
-    let can_redeploy = !selected.read().is_empty() && !pushing();
+    let busy = pushing() || sending();
+    let can_redeploy = !selected.read().is_empty() && !busy;
+    let can_send_plans = current.is_some() && !busy;
     let promote_base = current
         .as_ref()
         .map(Workspace::api_body)
@@ -3821,9 +3828,9 @@ fn HeartbeatTab() -> Element {
             }
             p { class: "muted scan-hint",
                 {if current.as_ref().is_some_and(Workspace::is_all) {
-                    "Newer crates.io releases across all workspaces. Check the versions to send to production.".to_string()
+                    "Newer crates.io releases across all workspaces. Check the versions to send to production. Send Plans writes each repo's own week-old updates into docs/plans/deputy-upgrades.md.".to_string()
                 } else if current.is_some() {
-                    format!("Newer crates.io releases for {ws_label}. Check the versions to send to production.")
+                    format!("Newer crates.io releases for {ws_label}. Check the versions to send to production. Send Plans writes week-old updates into that repo's docs/plans/deputy-upgrades.md (creating the folder if needed).")
                 } else {
                     "Select a workspace in the sidebar to see dependencies with newer releases.".to_string()
                 }}
@@ -3835,7 +3842,7 @@ fn HeartbeatTab() -> Element {
                         div { class: "prod-push-actions",
                             button {
                                 class: "ghost",
-                                disabled: all_keys.is_empty() || pushing(),
+                                disabled: all_keys.is_empty() || busy,
                                 onclick: {
                                     let keys = all_keys.clone();
                                     move |_| {
@@ -3847,6 +3854,87 @@ fn HeartbeatTab() -> Element {
                                     }
                                 },
                                 {if all_checked { "Uncheck all" } else { "Check all" }}
+                            }
+                            button {
+                                class: "ghost",
+                                disabled: !can_send_plans,
+                                onclick: {
+                                    let body = promote_base.clone();
+                                    move |_| {
+                                        sending.set(true);
+                                        push_msg.set(None);
+                                        let body = body.clone();
+                                        spawn(async move {
+                                            match post_json::<serde_json::Value>(
+                                                "/folders/upgrade-plans",
+                                                &body,
+                                            )
+                                            .await
+                                            {
+                                                Ok(v) => {
+                                                    let written = v
+                                                        .get("written")
+                                                        .and_then(|x| x.as_array())
+                                                        .map(|a| a.len())
+                                                        .unwrap_or(0);
+                                                    let updates: u64 = v
+                                                        .get("written")
+                                                        .and_then(|x| x.as_array())
+                                                        .map(|a| {
+                                                            a.iter()
+                                                                .filter_map(|r| {
+                                                                    r.get("updates").and_then(|u| u.as_u64())
+                                                                })
+                                                                .sum()
+                                                        })
+                                                        .unwrap_or(0);
+                                                    let skipped = v
+                                                        .get("skipped")
+                                                        .and_then(|x| x.as_array())
+                                                        .map(|a| a.len())
+                                                        .unwrap_or(0);
+                                                    let failed = v
+                                                        .get("errors")
+                                                        .and_then(|x| x.as_array())
+                                                        .cloned()
+                                                        .unwrap_or_default();
+                                                    let mut msg = format!(
+                                                        "✓ wrote plans to {written} repos ({updates} aged updates)"
+                                                    );
+                                                    if skipped > 0 {
+                                                        msg.push_str(&format!(
+                                                            " · skipped {skipped} local"
+                                                        ));
+                                                    }
+                                                    if !failed.is_empty() {
+                                                        let first = failed[0]
+                                                            .get("repo")
+                                                            .and_then(|r| r.as_str())
+                                                            .unwrap_or("repo");
+                                                        let err = failed[0]
+                                                            .get("error")
+                                                            .and_then(|r| r.as_str())
+                                                            .unwrap_or("error");
+                                                        msg.push_str(&format!(
+                                                            " · {} failed (e.g. {first}: {err})",
+                                                            failed.len()
+                                                        ));
+                                                    }
+                                                    if written == 0 && skipped > 0 && failed.is_empty()
+                                                    {
+                                                        msg = "no GitHub repos in this workspace — plans are only written to GitHub".to_owned();
+                                                    }
+                                                    push_msg.set(Some(msg));
+                                                }
+                                                Err(e) => {
+                                                    push_msg.set(Some(format!("send plans failed — {e}")))
+                                                }
+                                            }
+                                            sending.set(false);
+                                        });
+                                    }
+                                },
+                                {if sending() { "Sending plans…" } else { "Send Plans" }}
                             }
                             button {
                                 class: "primary",
@@ -4405,10 +4493,7 @@ mod workspace_encode {
             update_priority("1.2.3", "1.5.0"),
             Some(UpdatePriority::Medium)
         );
-        assert_eq!(
-            update_priority("1.2.3", "1.2.9"),
-            Some(UpdatePriority::Low)
-        );
+        assert_eq!(update_priority("1.2.3", "1.2.9"), Some(UpdatePriority::Low));
         assert_eq!(update_priority("1.2.3", "1.2.3"), None);
         assert_eq!(
             update_priority("1.2.3-alpha", "1.3.0"),
@@ -4453,10 +4538,7 @@ mod workspace_encode {
         assert!(report_is_for(&Workspace::all(), "All workspaces"));
         let group = Workspace::group("Remade With Rust");
         assert!(report_is_for(&group, "Remade With Rust"));
-        assert!(!report_is_for(
-            &group,
-            "Remade-With-Rust/rusty_alloc"
-        ));
+        assert!(!report_is_for(&group, "Remade-With-Rust/rusty_alloc"));
     }
 
     #[test]

@@ -25,7 +25,7 @@ desktop = [
 ]
 
 [dependencies]
-deputy-alloc = { path = "../deputy-alloc", version = "0.3.0" }
+deputy-alloc = { path = "../deputy-alloc", version = "0.4.0" }
 dioxus = { version = "0.7" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -43,7 +43,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 ], optional = true }
 tokio = { version = "1", features = ["time"], optional = true }
 # The embedded API + vault — the desktop app is self-contained (no separate `deputy serve`).
-deputy-api = { path = "../deputy-api", version = "0.3.0", optional = true }
+deputy-api = { path = "../deputy-api", version = "0.4.0", optional = true }
 base64 = { version = "0.22", optional = true }
 # Native folder picker for local-folder ingestion (desktop only).
 rfd = { version = "0.15", optional = true }

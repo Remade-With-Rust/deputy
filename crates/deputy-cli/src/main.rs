@@ -1,8 +1,8 @@
 //! # deputy-cli
 //!
-//! Headless CLI for Deputy. M3 ships `acquire` and `discover` for the Cargo ecosystem; more
-//! commands follow as later milestones land. This is a thin client over the library crates
-//! (the API-first surface in `deputy-api` arrives in M7).
+//! Headless CLI for Deputy: discover → acquire → analyze → scan → promote → gate → deploy,
+//! plus `deputy serve` for the localhost API (the Dioxus UI and agents). Thin client of
+//! `deputy-api`.
 #![forbid(unsafe_code)]
 
 #[global_allocator]

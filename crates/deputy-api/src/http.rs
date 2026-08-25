@@ -21,7 +21,8 @@ use crate::github_oauth::{
 };
 use crate::service::{
     CombinedScanReport, CoverageReport, DepAnalytics, DeputyService, FolderScanReport,
-    FolderSummary, HeartbeatReport, NewVersionReport, ProdDep, WorkspaceOverview,
+    FolderSummary, HeartbeatReport, NewVersionReport, ProdDep, UpgradePlansReport,
+    WorkspaceOverview,
 };
 
 type AppState = State<Arc<DeputyService>>;
@@ -161,6 +162,7 @@ pub fn router(service: Arc<DeputyService>) -> Router {
         .route("/folders/heartbeat", post(folder_heartbeat))
         .route("/folders/heartbeat/progress", get(heartbeat_progress))
         .route("/folders/promote", post(folder_promote))
+        .route("/folders/upgrade-plans", post(folder_upgrade_plans))
         .route("/folders/production", post(folder_production))
         .route("/production", get(production))
         .route("/advisories", get(advisory_count))
@@ -689,6 +691,13 @@ async fn folder_promote(
     Ok(Json(
         json!({ "promoted": svc.promote_folder(req.name, req.repo, hold, only).await? }),
     ))
+}
+
+async fn folder_upgrade_plans(
+    State(svc): AppState,
+    Json(req): Json<FolderScope>,
+) -> Result<Json<UpgradePlansReport>, ApiError> {
+    Ok(Json(svc.send_upgrade_plans(req.name, req.repo).await?))
 }
 
 async fn folder_production(

@@ -1372,7 +1372,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "deputy-acquire"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "deputy-core",
  "deputy-store",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-alloc"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "rusty_alloc",
  "rusty_alloc-api",
@@ -1392,7 +1392,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-analyze"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "deputy-core",
  "flate2",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum 0.7.9",
  "deputy-acquire",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "deputy-acquire",
@@ -1448,14 +1448,14 @@ dependencies = [
 
 [[package]]
 name = "deputy-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "deputy-crypto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-deploy"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "deputy-core",
  "deputy-store",
@@ -1483,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-ecosystem"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "deputy-core",
  "serde",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-id"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "kms-client",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-scan"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "deputy-analyze",
  "deputy-core",
@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-store"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "deputy-core",
  "deputy-crypto",
@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "deputy-ui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "deputy-alloc",

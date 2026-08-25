@@ -9,8 +9,11 @@ use deputy_id::Session;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+use crate::service::{
+    aged_plan_entries, base64_std, is_aged_update, unix_ymd, upgrade_plan_markdown, FolderSummary,
+    HeartbeatEntry, HeartbeatReport, RepoSummary, UPGRADE_PLAN_MIN_AGE_SECS,
+};
 use crate::{router, DeputyService};
-use crate::service::{FolderSummary, HeartbeatEntry, HeartbeatReport, RepoSummary};
 
 const LOCK: &str = r#"
 version = 4
@@ -384,7 +387,10 @@ fn last_scan_returns_the_stored_report_for_that_scope() {
         scanned_at: 1_700_000_000,
     };
     svc.remember_scan("*", None, report.clone());
-    let got = svc.last_scan("*".into(), None).unwrap().expect("stored scan");
+    let got = svc
+        .last_scan("*".into(), None)
+        .unwrap()
+        .expect("stored scan");
     assert_eq!(got.advisories, 3);
     assert_eq!(got.scanned_at, 1_700_000_000);
     assert!(svc.last_scan("other".into(), None).unwrap().is_none());
@@ -413,25 +419,29 @@ fn deleting_a_folder_drops_its_last_scan() {
         scanned_at: 1,
     };
     svc.remember_scan("alpha", None, report);
-    svc.remember_scan("*", None, crate::service::CombinedScanReport {
-        advisories: 1,
-        scan: crate::service::FolderScanReport {
-            name: "All workspaces".into(),
-            repos: Vec::new(),
+    svc.remember_scan(
+        "*",
+        None,
+        crate::service::CombinedScanReport {
+            advisories: 1,
+            scan: crate::service::FolderScanReport {
+                name: "All workspaces".into(),
+                repos: Vec::new(),
+            },
+            updates: crate::service::NewVersionReport {
+                name: "All workspaces".into(),
+                entries: Vec::new(),
+            },
+            updates_error: None,
+            coverage: crate::service::CoverageReport {
+                name: "All workspaces".into(),
+                registry_total: 0,
+                archived: 0,
+                gaps: Vec::new(),
+            },
+            scanned_at: 2,
         },
-        updates: crate::service::NewVersionReport {
-            name: "All workspaces".into(),
-            entries: Vec::new(),
-        },
-        updates_error: None,
-        coverage: crate::service::CoverageReport {
-            name: "All workspaces".into(),
-            registry_total: 0,
-            archived: 0,
-            gaps: Vec::new(),
-        },
-        scanned_at: 2,
-    });
+    );
     svc.delete_folder("alpha").unwrap();
     assert!(svc.last_scan("alpha".into(), None).unwrap().is_none());
     assert_eq!(
@@ -533,7 +543,10 @@ async fn group_heartbeat_unions_updates_from_each_repo_cache() {
         .filter(|e| e.update_available)
         .map(|e| e.name.as_str())
         .collect();
-    assert!(outdated.contains(&"serde"), "group kept rusty_alloc's serde update");
+    assert!(
+        outdated.contains(&"serde"),
+        "group kept rusty_alloc's serde update"
+    );
     assert!(
         outdated.contains(&"tokio"),
         "group kept rusty_tokens' tokio update"
@@ -618,9 +631,8 @@ async fn empty_analytics_is_cached_for_reload() {
 async fn analytics_and_heartbeat_reload_from_vault() {
     let dir = TempDir::new().unwrap();
     {
-        let svc = Arc::new(
-            DeputyService::open(dir.path(), b"pw", test_session(u64::MAX), 0).unwrap(),
-        );
+        let svc =
+            Arc::new(DeputyService::open(dir.path(), b"pw", test_session(u64::MAX), 0).unwrap());
         let _ = svc
             .clone()
             .folder_analytics("*".into(), None)
@@ -628,9 +640,7 @@ async fn analytics_and_heartbeat_reload_from_vault() {
             .unwrap();
         let _ = svc.folder_heartbeat("*".into(), None).await.unwrap();
     }
-    let svc = Arc::new(
-        DeputyService::open(dir.path(), b"pw", test_session(u64::MAX), 0).unwrap(),
-    );
+    let svc = Arc::new(DeputyService::open(dir.path(), b"pw", test_session(u64::MAX), 0).unwrap());
     let analytics = svc
         .clone()
         .folder_analytics("*".into(), None)
@@ -808,4 +818,137 @@ fn cargo_tomls_from_github_tarball_reads_nested_manifests() {
     let tomls = crate::service::cargo_tomls_from_github_tarball(&gz);
     assert_eq!(tomls.len(), 1);
     assert!(tomls[0].contains("rusty_tokens"));
+}
+
+fn repo_summary(full_name: &str) -> RepoSummary {
+    RepoSummary {
+        full_name: full_name.into(),
+        deps: 1,
+        acquired: 1,
+        lockfile_found: true,
+        source_archived: true,
+        error: None,
+    }
+}
+
+#[test]
+fn unix_ymd_is_utc_civil_date() {
+    assert_eq!(unix_ymd(0), "1970-01-01");
+    assert_eq!(unix_ymd(86_400), "1970-01-02");
+    assert_eq!(unix_ymd(1_700_000_000), "2023-11-14");
+}
+
+#[test]
+fn base64_std_pads_remainders() {
+    assert_eq!(base64_std(b"Man"), "TWFu");
+    assert_eq!(base64_std(b"Ma"), "TWE=");
+    assert_eq!(base64_std(b"M"), "TQ==");
+}
+
+#[test]
+fn aged_update_requires_a_week_old_crates_io_release() {
+    let now = 1_800_000_000;
+    let min = UPGRADE_PLAN_MIN_AGE_SECS;
+    let old = hb_entry("serde", "1.0.0", "1.1.0", true);
+    assert!(is_aged_update(&old, now), "fixture date is far in the past");
+
+    let mut fresh = hb_entry("tokio", "1.0.0", "1.2.0", true);
+    fresh.latest_updated = Some(now.saturating_sub(min) + 1);
+    assert!(!is_aged_update(&fresh, now), "released in the last week");
+
+    let mut boundary = hb_entry("bytes", "1.0.0", "1.1.0", true);
+    boundary.latest_updated = Some(now.saturating_sub(min));
+    assert!(
+        is_aged_update(&boundary, now),
+        "exactly seven days old is eligible"
+    );
+
+    let mut missing = hb_entry("anyhow", "1.0.0", "1.1.0", true);
+    missing.latest_updated = None;
+    assert!(!is_aged_update(&missing, now));
+
+    let mut zero = hb_entry("foo", "1.0.0", "1.1.0", true);
+    zero.latest_updated = Some(0);
+    assert!(!is_aged_update(&zero, now));
+
+    let current = hb_entry("bar", "1.0.0", "1.0.0", false);
+    assert!(!is_aged_update(&current, now));
+}
+
+#[test]
+fn upgrade_plan_markdown_lists_only_the_aged_rows() {
+    let now = 1_800_000_000;
+    let serde = hb_entry("serde", "1.0.0", "1.1.0", true);
+    let md = upgrade_plan_markdown("owner/repo", &[serde], now);
+    assert!(md.contains("owner/repo"));
+    assert!(md.contains("`serde`"));
+    assert!(md.contains("`1.0.0`"));
+    assert!(md.contains("`1.1.0`"));
+    assert!(md.contains("at least 7 days old"));
+    assert!(!md.contains("tokio"));
+
+    let empty = upgrade_plan_markdown("owner/repo", &[], now);
+    assert!(empty.contains("No dependencies in this repository currently meet that bar."));
+}
+
+#[test]
+fn aged_plan_entries_are_per_repo_pins_not_the_group_union() {
+    let now = 1_800_000_000;
+    let mut pins = std::collections::HashSet::new();
+    pins.insert(("serde".into(), "1.0.0".into()));
+    let mut by_pin = std::collections::HashMap::new();
+    by_pin.insert(
+        ("serde".into(), "1.0.0".into()),
+        hb_entry("serde", "1.0.0", "1.1.0", true),
+    );
+    by_pin.insert(
+        ("tokio".into(), "1.0.0".into()),
+        hb_entry("tokio", "1.0.0", "1.2.0", true),
+    );
+    let aged = aged_plan_entries(&pins, &by_pin, now);
+    assert_eq!(aged.len(), 1);
+    assert_eq!(aged[0].name, "serde");
+}
+
+#[tokio::test]
+async fn send_upgrade_plans_skips_local_ingest_names() {
+    let (svc, _vault_dir) = test_service();
+    svc.test_put_folder(
+        FolderSummary {
+            name: "local-app".into(),
+            repos: vec![repo_summary("local-app")],
+        },
+        vec![("local-app".into(), LOCK.trim().to_owned())],
+    );
+    let report = svc
+        .send_upgrade_plans("local-app".into(), None)
+        .await
+        .unwrap();
+    assert_eq!(report.skipped, vec!["local-app".to_owned()]);
+    assert!(report.written.is_empty());
+    assert!(report.errors.is_empty());
+}
+
+#[tokio::test]
+async fn send_upgrade_plans_needs_github_for_owner_repo_names() {
+    let (svc, _vault_dir) = test_service();
+    svc.test_put_folder(
+        FolderSummary {
+            name: "Remade-With-Rust".into(),
+            repos: vec![repo_summary("Remade-With-Rust/rusty_alloc")],
+        },
+        vec![(
+            "Remade-With-Rust/rusty_alloc".into(),
+            LOCK.trim().to_owned(),
+        )],
+    );
+    let err = svc
+        .send_upgrade_plans("Remade-With-Rust".into(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("GitHub not connected"),
+        "{}",
+        err.message
+    );
 }

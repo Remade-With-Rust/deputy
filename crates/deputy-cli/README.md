@@ -62,16 +62,31 @@ disappears, or ships a compromised release, you still hold the exact bytes you v
 mID is **on by default**; pass `--no-mid` to run under a local identity instead. The vault key is
 bound to the verified DID, so another identity's sign-in cannot open your vault.
 
-## Install
+## How to
+
+**This crate is the install.** Full walkthrough (dashboard, Send Plans, GitHub OAuth):
+[How to in the Deputy README](https://github.com/Remade-With-Rust/deputy#how-to).
 
 ```sh
 cargo install deputy-cli   # provides the `deputy` binary
+export DEPUTY_PASSPHRASE='choose-a-strong-passphrase'
 ```
 
-```sh
-# Archive and vet a repository's dependency closure, then gate a deploy on it.
-export DEPUTY_PASSPHRASE='…'
+The desktop dashboard (New Versions, **Send Plans**, Redeploy) is not published. Clone
+[the repo](https://github.com/Remade-With-Rust/deputy) and run:
 
+```sh
+export DEPUTY_NO_MID=1
+cargo run -p deputy-ui --features desktop
+```
+
+**Send Plans** writes `docs/plans/deputy-upgrades.md` into each connected GitHub repo — only
+crates.io releases at least 7 days old, so a just-published crate can settle. Same op over HTTP:
+`POST /folders/upgrade-plans`.
+
+Command-line pipeline (no dashboard):
+
+```sh
 deputy discover ./my-app          # what would be acquired (no network, no vault)
 deputy acquire  ./my-app          # fetch + verify + seal into the dirty store
 deputy analyze  ./my-app          # blast radius + capability surface, most critical first
@@ -79,7 +94,7 @@ deputy scan     ./my-app          # integrity / advisories / substitution → ve
 deputy promote  ./my-app          # clean ones into prod, with receipts
 deputy gate     ./my-app          # exits non-zero unless every dep is promoted + receipted
 
-deputy serve --no-mid --port 7878 # the API + UI, for local development
+deputy serve --no-mid --port 7878 # localhost API for the UI and agents
 ```
 
 ## Where this sits

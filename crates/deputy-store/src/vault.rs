@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 
 use deputy_crypto::{
     check_verifier, derive_master_bound, derive_subkey, make_verifier, KdfParams, KeyDomain,
-    MasterKey,
-    SubKey,
+    MasterKey, SubKey,
 };
 use serde::{Deserialize, Serialize};
 use spacedb_store::{Collection, KeyProvider, RedbEngine, StaticKeyProvider};

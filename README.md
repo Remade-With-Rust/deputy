@@ -24,6 +24,62 @@ Part of **[Remade With Rust](https://github.com/Remade-With-Rust)** by
 cargo install deputy-cli   # provides the `deputy` binary
 ```
 
+## How to
+
+For someone who just installed Deputy — not a contributor building the workspace.
+
+### 1. Install and set a passphrase
+
+```sh
+cargo install deputy-cli
+```
+
+Requires **Rust 1.85+**. The vault is created at `~/.deputy` (Windows: `%USERPROFILE%\.deputy`), or `$DEPUTY_VAULT` if you set it. The passphrase is the at-rest encryption key (Argon2id) — Deputy never stores it:
+
+```sh
+export DEPUTY_PASSPHRASE='choose-a-strong-passphrase'   # bash / zsh
+# PowerShell: $env:DEPUTY_PASSPHRASE = 'choose-a-strong-passphrase'
+```
+
+### 2. Open the dashboard (Send Plans, New Versions, Scan)
+
+The desktop app is **not** on crates.io. Clone this repo and run it against the same vault:
+
+```sh
+git clone https://github.com/Remade-With-Rust/deputy
+cd deputy
+export DEPUTY_PASSPHRASE='choose-a-strong-passphrase'
+export DEPUTY_NO_MID=1          # local identity for a first run; omit this when using mID
+cargo run -p deputy-ui --features desktop
+```
+
+Do **not** use `dx serve` for the desktop app. The window embeds the API at `http://127.0.0.1:7878`.
+
+1. **Connect with GitHub** — approve access in the browser (the `repo` scope is what lets Deputy read lockfiles and write plans).
+2. Pick repositories (or a local folder) and download them into a named workspace.
+3. **Scan** that workspace.
+4. **New Versions** — crates.io releases newer than each repo's `Cargo.lock`.
+   - **Send Plans** commits `docs/plans/deputy-upgrades.md` into **each GitHub repo** (creates `docs/plans/` if it is missing). Each file lists *that* repo's pins whose latest crates.io release is **at least 7 days old**, so a just-published crate can settle. Local folders are skipped.
+   - Check the versions you want in the vault, then **Redeploy to Production**.
+5. **Production** is what has been promoted.
+
+### 3. Command line (no dashboard)
+
+Same passphrase, then the pipeline against a repo that has a `Cargo.lock`:
+
+```sh
+deputy discover ./my-app
+deputy acquire  ./my-app
+deputy analyze  ./my-app
+deputy scan     ./my-app          # non-zero if anything is flagged
+deputy promote  ./my-app
+deputy gate     ./my-app          # the CI check — non-zero unless every dep is promoted + receipted
+```
+
+`deputy serve --no-mid --port 7878` is the localhost API (UI, agents, `POST /folders/upgrade-plans`). mID is on by default; `--no-mid` is the local-dev toggle.
+
+Full design: [docs/](docs/).
+
 ## Why
 
 A modern Rust app pulls in hundreds of transitive crates. You don't control them, you can't
@@ -52,8 +108,9 @@ Deputy is the personal backstop:
   CVSS v3.1 severity and correct multi-branch "not-patched" matching, plus integrity and
   **substitution** detection (same `name@version`, different hash).
 - **Dep Analytics** — language mix across crate sources (bars + per-crate languages/lines).
-- **New Versions** — tracks scanned dependencies for newer releases and public advisories,
-  then hold anything not ready and redeploy the rest to production.
+- **New Versions** — tracks scanned dependencies for newer releases and public advisories.
+  Check versions to migrate into production, or **Send Plans** to commit a per-repo
+  `docs/plans/deputy-upgrades.md` listing updates whose crates.io release is at least a week old.
 - **Staging → production** — promote scanned-clean dependencies into `prod` with hash-chained,
   mID-attributed receipts; hold anything not ready in staging.
 - **Offline-coverage check** — reports exactly which dependencies are safely archived vs. gaps
@@ -61,22 +118,7 @@ Deputy is the personal backstop:
 - **mID authentication** — sign in with [MATA Sovereign ID](https://github.com/Remade-With-Rust/sovereign-id);
   every mutating operation is gated by a verified identity, a scoped SpaceDB capability, and a
   typed [mata-cap](https://crates.io/crates/mata-cap) `deputy:<action>` grant.
-- **Three surfaces** — an HTTP API (API-first), a `deputy` CLI, and a Dioxus web (WASM) UI.
-
-## Quick start
-
-```sh
-# Build everything and run the test suite
-cargo build --workspace
-cargo test --workspace
-
-# Run the API + UI locally (mID deactivated for local dev)
-deputy serve --no-mid --port 7878
-```
-
-Then click **Connect with GitHub** — Deputy opens a browser tab for you to approve access
-(no personal access token). Select repositories and download + analyze them into a named
-folder. See [docs/](docs/) for the full workflow.
+- **Three surfaces** — an HTTP API (API-first), a `deputy` CLI, and a Dioxus desktop (and web) UI.
 
 ## How it works
 
@@ -115,7 +157,7 @@ Deputy is a Cargo workspace. Each library crate is published independently; inst
 | [`deputy-deploy`](crates/deputy-deploy) | Promotion receipts, the fail-closed gate, and vendoring. |
 | [`deputy-api`](crates/deputy-api) | The HTTP API + service layer that composes the pipeline. |
 | [`deputy-cli`](crates/deputy-cli) | The `deputy` command-line binary. |
-| `deputy-ui` | The Dioxus web (WASM) dashboard (not published). |
+| `deputy-ui` | The Dioxus desktop (and web) dashboard (not published). |
 
 ## Design
 
@@ -141,8 +183,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo deny check             # supply-chain / license gate (dogfooding the mission)
 ```
 
-Requires Rust 1.85+. The web UI builds with [Dioxus](https://dioxuslabs.com/) (`dx serve` in
-`crates/deputy-ui`).
+Requires Rust 1.85+. The desktop UI:
+
+```sh
+DEPUTY_PASSPHRASE='…' DEPUTY_NO_MID=1 cargo run -p deputy-ui --features desktop
+```
 
 ## Contributing
 

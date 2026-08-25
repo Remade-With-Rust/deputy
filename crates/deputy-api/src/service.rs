@@ -89,6 +89,58 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Path written into each GitHub repo. The Contents API creates `docs/plans/` if missing.
+pub(crate) const UPGRADE_PLAN_PATH: &str = "docs/plans/deputy-upgrades.md";
+/// Skip crates.io releases younger than this so a just-published version can settle.
+pub(crate) const UPGRADE_PLAN_MIN_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+
+pub(crate) fn unix_ymd(ts: u64) -> String {
+    // Civil date from Unix days (Howard Hinnant). No chrono.
+    let z = ts / 86_400 + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+pub(crate) fn base64_std(bytes: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        let n = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8) | bytes[i + 2] as u32;
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(T[((n >> 6) & 63) as usize] as char);
+        out.push(T[(n & 63) as usize] as char);
+        i += 3;
+    }
+    match bytes.len() - i {
+        1 => {
+            let n = (bytes[i] as u32) << 16;
+            out.push(T[((n >> 18) & 63) as usize] as char);
+            out.push(T[((n >> 12) & 63) as usize] as char);
+            out.push('=');
+            out.push('=');
+        }
+        2 => {
+            let n = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8);
+            out.push(T[((n >> 18) & 63) as usize] as char);
+            out.push(T[((n >> 12) & 63) as usize] as char);
+            out.push(T[((n >> 6) & 63) as usize] as char);
+            out.push('=');
+        }
+        _ => {}
+    }
+    out
+}
+
 fn mata_action(op: Ops) -> &'static str {
     if op.contains(Ops::WRITE) {
         "write"
@@ -189,6 +241,89 @@ pub struct HeartbeatEntry {
     /// did not give a date.
     #[serde(default)]
     pub latest_updated: Option<u64>,
+}
+
+pub(crate) fn is_aged_update(e: &HeartbeatEntry, now: u64) -> bool {
+    e.update_available
+        && e.latest.as_deref().is_some_and(|s| !s.is_empty())
+        && e.latest_updated
+            .is_some_and(|ts| ts > 0 && now.saturating_sub(ts) >= UPGRADE_PLAN_MIN_AGE_SECS)
+}
+
+pub(crate) fn upgrade_plan_markdown(repo: &str, entries: &[HeartbeatEntry], now: u64) -> String {
+    let mut lines = vec![
+        "# Deputy upgrade plan".to_owned(),
+        String::new(),
+        format!("Repository: `{repo}`"),
+        format!("Generated: {} (UTC)", unix_ymd(now)),
+        String::new(),
+        "These crates.io releases are **at least 7 days old** and newer than the version pinned in this repo's `Cargo.lock`. Verify each update before merging. Newer-than-a-week releases are omitted on purpose so a just-published crate can settle.".to_owned(),
+        String::new(),
+    ];
+    if entries.is_empty() {
+        lines.push("No dependencies in this repository currently meet that bar.".to_owned());
+        lines.push(String::new());
+        return lines.join("\n");
+    }
+    lines.push("| crate | pinned | latest | published | advisories |".to_owned());
+    lines.push("|---|---|---|---|---|".to_owned());
+    let mut rows: Vec<&HeartbeatEntry> = entries.iter().collect();
+    rows.sort_by(|a, b| a.name.cmp(&b.name).then(a.current.cmp(&b.current)));
+    for e in rows {
+        let latest = e.latest.as_deref().unwrap_or("?");
+        let published = e
+            .latest_updated
+            .filter(|t| *t > 0)
+            .map(unix_ymd)
+            .unwrap_or_else(|| "—".to_owned());
+        let adv = if e.advisories.is_empty() {
+            "—".to_owned()
+        } else {
+            e.advisories.join("; ")
+        };
+        lines.push(format!(
+            "| `{}` | `{}` | `{latest}` | {published} | {adv} |",
+            e.name, e.current
+        ));
+    }
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+pub(crate) fn aged_plan_entries(
+    pins: &HashSet<(String, String)>,
+    by_pin: &HashMap<(String, String), HeartbeatEntry>,
+    now: u64,
+) -> Vec<HeartbeatEntry> {
+    let mut out: Vec<HeartbeatEntry> = pins
+        .iter()
+        .filter_map(|k| by_pin.get(k).cloned())
+        .filter(|e| is_aged_update(e, now))
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name).then(a.current.cmp(&b.current)));
+    out
+}
+
+/// One GitHub repo that received `docs/plans/deputy-upgrades.md`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpgradePlanWritten {
+    pub repo: String,
+    pub updates: usize,
+}
+
+/// A GitHub repo that could not be written.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpgradePlanError {
+    pub repo: String,
+    pub error: String,
+}
+
+/// Result of committing upgrade plans into each GitHub repo in a workspace.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpgradePlansReport {
+    pub written: Vec<UpgradePlanWritten>,
+    pub skipped: Vec<String>,
+    pub errors: Vec<UpgradePlanError>,
 }
 
 /// The heartbeat for every dependency in a folder.
@@ -564,6 +699,102 @@ fn github_http_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+fn github_contents_url(full_name: &str) -> String {
+    format!("https://api.github.com/repos/{full_name}/contents/{UPGRADE_PLAN_PATH}")
+}
+
+/// SHA of an existing plan file, or `None` if GitHub 404s (missing file *or* the token
+/// cannot see the repo — callers try every connected account).
+async fn github_plan_sha(
+    client: &reqwest::Client,
+    token: &str,
+    full_name: &str,
+) -> Result<Option<String>, String> {
+    let resp = client
+        .get(github_contents_url(full_name))
+        .bearer_auth(token)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GitHub GET {}", resp.status()));
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(v.get("sha")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned))
+}
+
+async fn github_put_plan(
+    client: &reqwest::Client,
+    token: &str,
+    full_name: &str,
+    markdown: &str,
+) -> Result<(), String> {
+    let sha = github_plan_sha(client, token, full_name).await?;
+    let mut body = serde_json::json!({
+        "message": "docs: refresh Deputy upgrade plan",
+        "content": base64_std(markdown.as_bytes()),
+    });
+    if let Some(sha) = sha {
+        body["sha"] = serde_json::Value::String(sha);
+    }
+    let resp = client
+        .put(github_contents_url(full_name))
+        .bearer_auth(token)
+        .header("Accept", "application/vnd.github+json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.status() == reqwest::StatusCode::CONFLICT {
+        let sha = github_plan_sha(client, token, full_name).await?;
+        if let Some(sha) = sha {
+            body["sha"] = serde_json::Value::String(sha);
+        }
+        let retry = client
+            .put(github_contents_url(full_name))
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if retry.status().is_success() {
+            return Ok(());
+        }
+        return Err(format!("GitHub PUT {}", retry.status()));
+    }
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("403 — the PAT needs 'Contents: Write' on this repository".to_owned());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GitHub PUT {}", resp.status()));
+    }
+    Ok(())
+}
+
+async fn github_put_plan_any(
+    client: &reqwest::Client,
+    tokens: &[String],
+    full_name: &str,
+    markdown: &str,
+) -> Result<(), String> {
+    let mut last_err = None;
+    for token in tokens {
+        match github_put_plan(client, token, full_name, markdown).await {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "no GitHub token could write this repository".to_owned()))
+}
+
 /// GitHub source tarball for `owner/repo` (default branch). Follows the codeload redirect.
 async fn fetch_repo_tarball(
     client: &reqwest::Client,
@@ -604,11 +835,7 @@ async fn fetch_repo_tarball(
     Err(last_err.unwrap_or_else(|| "no GitHub token could fetch the source tarball".to_owned()))
 }
 
-async fn fetch_crate_bytes(
-    client: &reqwest::Client,
-    name: &str,
-    version: &str,
-) -> Option<Vec<u8>> {
+async fn fetch_crate_bytes(client: &reqwest::Client, name: &str, version: &str) -> Option<Vec<u8>> {
     let url = format!("https://static.crates.io/crates/{name}/{name}-{version}.crate");
     let resp = client.get(&url).send().await.ok()?;
     if !resp.status().is_success() {
@@ -830,16 +1057,19 @@ pub(crate) fn crates_io_latest_from_json(v: &serde_json::Value) -> Option<(Strin
         .filter(|s| !s.is_empty())
         .or_else(|| krate.get("newest_version").and_then(|s| s.as_str()))?
         .to_owned();
-    let from_version = v.get("versions").and_then(|x| x.as_array()).and_then(|arr| {
-        arr.iter()
-            .find(|ver| ver.get("num").and_then(|n| n.as_str()) == Some(latest.as_str()))
-            .and_then(|ver| {
-                ver.get("created_at")
-                    .and_then(|s| s.as_str())
-                    .or_else(|| ver.get("updated_at").and_then(|s| s.as_str()))
-            })
-            .and_then(rfc3339_to_unix)
-    });
+    let from_version = v
+        .get("versions")
+        .and_then(|x| x.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|ver| ver.get("num").and_then(|n| n.as_str()) == Some(latest.as_str()))
+                .and_then(|ver| {
+                    ver.get("created_at")
+                        .and_then(|s| s.as_str())
+                        .or_else(|| ver.get("updated_at").and_then(|s| s.as_str()))
+                })
+                .and_then(rfc3339_to_unix)
+        });
     let updated = from_version.or_else(|| {
         krate
             .get("updated_at")
@@ -924,11 +1154,7 @@ async fn crates_io_latest_versioned(
 }
 
 /// Checksum for a specific crates.io version, used when promoting a selected new release.
-async fn crates_io_checksum(
-    client: &reqwest::Client,
-    name: &str,
-    version: &str,
-) -> Option<String> {
+async fn crates_io_checksum(client: &reqwest::Client, name: &str, version: &str) -> Option<String> {
     let resp = client
         .get(format!("https://crates.io/api/v1/crates/{name}/{version}"))
         .header("User-Agent", "deputy")
@@ -946,12 +1172,16 @@ async fn crates_io_checksum(
 }
 
 fn pin_for_named_version(vault: &Vault, pins: &[Pin], name: &str, version: &str) -> Option<Pin> {
-    if let Some(pin) = pins.iter().find(|p| {
-        p.dep.name.as_str() == name && p.dep.version.as_str() == version
-    }) {
+    if let Some(pin) = pins
+        .iter()
+        .find(|p| p.dep.name.as_str() == name && p.dep.version.as_str() == version)
+    {
         return Some(pin.clone());
     }
-    let hash = vault.crate_hash(StoreKind::Dirty, name, version).ok().flatten()?;
+    let hash = vault
+        .crate_hash(StoreKind::Dirty, name, version)
+        .ok()
+        .flatten()?;
     Some(Pin {
         dep: DepRef {
             ecosystem: EcosystemId::Cargo,
@@ -1178,18 +1408,10 @@ impl DeputyService {
             .lock()
             .expect("folder lockfiles mutex") = Self::load_folder_lockfiles(&vault);
         *self.last_scans.lock().expect("last scans mutex") = Self::load_last_scans(&vault);
-        *self
-            .analytics_cache
-            .lock()
-            .expect("analytics mutex") = Self::load_analytics_cache(&vault);
-        *self
-            .last_heartbeats
-            .lock()
-            .expect("last heartbeats mutex") = Self::load_last_heartbeats(&vault);
-        *self
-            .repo_archives
-            .lock()
-            .expect("repo archives mutex") = Self::load_repo_archives(&vault);
+        *self.analytics_cache.lock().expect("analytics mutex") = Self::load_analytics_cache(&vault);
+        *self.last_heartbeats.lock().expect("last heartbeats mutex") =
+            Self::load_last_heartbeats(&vault);
+        *self.repo_archives.lock().expect("repo archives mutex") = Self::load_repo_archives(&vault);
         *self.vault.lock().expect("vault mutex") = Some(std::sync::Arc::new(vault));
         Ok(())
     }
@@ -1341,14 +1563,17 @@ impl DeputyService {
     }
 
     fn remember_repo_archive(&self, full_name: &str, hash: &ContentHash, bytes: usize) {
-        self.repo_archives.lock().expect("repo archives mutex").insert(
-            full_name.to_owned(),
-            RepoArchive {
-                full_name: full_name.to_owned(),
-                hash: hash.to_hex(),
-                bytes,
-            },
-        );
+        self.repo_archives
+            .lock()
+            .expect("repo archives mutex")
+            .insert(
+                full_name.to_owned(),
+                RepoArchive {
+                    full_name: full_name.to_owned(),
+                    hash: hash.to_hex(),
+                    bytes,
+                },
+            );
         self.persist_repo_archives();
     }
 
@@ -1404,7 +1629,12 @@ impl DeputyService {
         self.persist_last_heartbeats();
     }
 
-    pub(crate) fn remember_scan(&self, name: &str, repo: Option<&str>, mut report: CombinedScanReport) {
+    pub(crate) fn remember_scan(
+        &self,
+        name: &str,
+        repo: Option<&str>,
+        mut report: CombinedScanReport,
+    ) {
         if report.scanned_at == 0 {
             report.scanned_at = unix_now();
         }
@@ -1703,7 +1933,8 @@ impl DeputyService {
             let (source_archived, unlocked_crates, source_err) = self
                 .archive_github_source(&client, &tokens, &repo, lockfile_found)
                 .await;
-            let fetch_error = fetch_error.or(source_err.filter(|_| !source_archived && !lockfile_found));
+            let fetch_error =
+                fetch_error.or(source_err.filter(|_| !source_archived && !lockfile_found));
             staged.push(StagedRepo {
                 repo,
                 lockfile_found,
@@ -2137,12 +2368,7 @@ impl DeputyService {
                     });
                 }
                 if let Some(want) = request_repo {
-                    combined.extend(
-                        summaries
-                            .iter()
-                            .filter(|r| r.full_name == want)
-                            .cloned(),
-                    );
+                    combined.extend(summaries.iter().filter(|r| r.full_name == want).cloned());
                 } else {
                     combined.extend(summaries.iter().cloned());
                 }
@@ -2390,11 +2616,7 @@ impl DeputyService {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_put_folder(
-        &self,
-        folder: FolderSummary,
-        lockfiles: Vec<(String, String)>,
-    ) {
+    pub(crate) fn test_put_folder(&self, folder: FolderSummary, lockfiles: Vec<(String, String)>) {
         let name = folder.name.clone();
         self.folders
             .lock()
@@ -2516,9 +2738,7 @@ impl DeputyService {
         if is_all_workspaces(name) {
             map.iter()
                 .flat_map(|(folder, files)| {
-                    files
-                        .iter()
-                        .map(|(repo, _)| (folder.clone(), repo.clone()))
+                    files.iter().map(|(repo, _)| (folder.clone(), repo.clone()))
                 })
                 .collect()
         } else {
@@ -2570,10 +2790,7 @@ impl DeputyService {
         repo: Option<&str>,
     ) -> HashMap<(String, String), HeartbeatEntry> {
         let keys = self.heartbeat_cache_keys(name, repo);
-        let cache = self
-            .last_heartbeats
-            .lock()
-            .expect("last heartbeats mutex");
+        let cache = self.last_heartbeats.lock().expect("last heartbeats mutex");
         let mut by_pin = HashMap::new();
         for key in keys {
             let Some(report) = cache.get(&key) else {
@@ -3071,6 +3288,100 @@ impl DeputyService {
         Ok(())
     }
 
+    /// Commit `docs/plans/deputy-upgrades.md` into every GitHub repo in this workspace
+    /// (capability: WRITE). Each file lists that repo's lockfile pins whose latest crates.io
+    /// release is at least a week old. Local ingest names are skipped; missing `docs/plans/`
+    /// is created by the Contents API.
+    pub async fn send_upgrade_plans(
+        &self,
+        name: String,
+        repo: Option<String>,
+    ) -> Result<UpgradePlansReport, ApiError> {
+        self.authorize_op(Ops::WRITE)?;
+        let repo = scope_repo(&repo);
+        if is_all_workspaces(&name) && repo.is_some() {
+            return Err(ApiError::bad_request(
+                "cannot scope a repository on the all-workspaces view",
+            ));
+        }
+        let mut scopes = self.lockfile_repo_scopes(&name);
+        if let Some(r) = repo {
+            if !scopes.iter().any(|(_, full)| full == r) {
+                // Same error as other folder ops when the repo isn't in this workspace.
+                let _ = self.stored_lockfiles(&name, Some(r))?;
+            }
+            scopes.retain(|(_, full)| full == r);
+        }
+        let mut written = Vec::new();
+        let mut skipped = Vec::new();
+        let mut errors = Vec::new();
+        let mut seen = HashSet::new();
+        let mut github_targets: Vec<(String, String)> = Vec::new();
+        for (folder, full_name) in scopes {
+            if !seen.insert(full_name.clone()) {
+                continue;
+            }
+            if is_github_full_name(&full_name) {
+                github_targets.push((folder, full_name));
+            } else {
+                skipped.push(full_name);
+            }
+        }
+        if github_targets.is_empty() {
+            return Ok(UpgradePlansReport {
+                written,
+                skipped,
+                errors,
+            });
+        }
+        let tokens = self.github_tokens()?;
+        let client = github_http_client();
+        let now = unix_now();
+        for (folder, full_name) in github_targets {
+            let pin_keys = match self.stored_lockfiles(&folder, Some(&full_name)) {
+                Ok(files) => {
+                    let mut keys = HashSet::new();
+                    for (_project, text) in files {
+                        if let Ok(pins) = parse_pins(&text) {
+                            for p in pins {
+                                keys.insert((
+                                    p.dep.name.as_str().to_owned(),
+                                    p.dep.version.as_str().to_owned(),
+                                ));
+                            }
+                        }
+                    }
+                    keys
+                }
+                Err(e) => {
+                    errors.push(UpgradePlanError {
+                        repo: full_name,
+                        error: e.message,
+                    });
+                    continue;
+                }
+            };
+            let by_pin = self.cached_heartbeat_pins(&folder, Some(&full_name));
+            let aged = aged_plan_entries(&pin_keys, &by_pin, now);
+            let markdown = upgrade_plan_markdown(&full_name, &aged, now);
+            match github_put_plan_any(&client, &tokens, &full_name, &markdown).await {
+                Ok(()) => written.push(UpgradePlanWritten {
+                    repo: full_name,
+                    updates: aged.len(),
+                }),
+                Err(error) => errors.push(UpgradePlanError {
+                    repo: full_name,
+                    error,
+                }),
+            }
+        }
+        Ok(UpgradePlansReport {
+            written,
+            skipped,
+            errors,
+        })
+    }
+
     /// The validated dependencies in the production store (capability: READ).
     /// When `name` is set, only deps that appear in that folder (and optional repo) are returned.
     pub fn production_deps(
@@ -3153,7 +3464,8 @@ impl DeputyService {
 
         self.set_scan_progress("coverage", "Checking offline coverage", 0, 1);
         tokio::task::yield_now().await;
-        let coverage = tokio::task::block_in_place(|| self.folder_coverage(name.clone(), repo.clone()))?;
+        let coverage =
+            tokio::task::block_in_place(|| self.folder_coverage(name.clone(), repo.clone()))?;
         self.set_scan_progress("coverage", "Checking offline coverage", 1, 1);
 
         let report = CombinedScanReport {

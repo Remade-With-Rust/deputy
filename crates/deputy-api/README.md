@@ -51,8 +51,8 @@ rather than a shared secret.
 
 | Module | What's in it |
 |---|---|
-| `service` | `DeputyService` — the canonical capability layer: discover, acquire, analyze, scan, promote, gate, deploy, folders, coverage, heartbeat |
-| `http` | `router` — the axum HTTP/JSON transport (`/health`, `/discover`, `/acquire`, `/analyze`, `/scan`, `/promote`, `/gate`, `/deploy`, `/folders/*`, `/github/*`, `/auth/*`, `/session`) |
+| `service` | `DeputyService` — the canonical capability layer: discover, acquire, analyze, scan, promote, gate, deploy, folders, coverage, heartbeat, upgrade plans |
+| `http` | `router` — the axum HTTP/JSON transport (`/health`, `/discover`, `/acquire`, `/analyze`, `/scan`, `/promote`, `/gate`, `/deploy`, `/folders/*` including `/folders/upgrade-plans`, `/github/*`, `/auth/*`, `/session`) |
 | `rustsec` | The RUSTSEC advisory-db importer — download, decompress, parse |
 | `error` | `ApiError` — the single error type across both surfaces |
 
@@ -77,6 +77,11 @@ let service = open_gated(&dir, passphrase)?;
 // The CLI, the UI and any agent all drive these same methods; HTTP is just a transport.
 serve_blocking(service, "127.0.0.1:7878".parse()?)?;
 ```
+
+Upgrade plans (WRITE): `POST /folders/upgrade-plans` with `{ "name": "<workspace>", "repo": "owner/name" }`
+(`repo` omitted = every GitHub repo in that workspace, or all workspaces when `name` is `*`).
+Each repo gets `docs/plans/deputy-upgrades.md` — only updates whose crates.io release is at least
+a week old. See [the root README How to](https://github.com/Remade-With-Rust/deputy#how-to).
 
 ## Where this sits
 

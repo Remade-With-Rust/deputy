@@ -254,40 +254,102 @@ pub(crate) fn upgrade_plan_markdown(repo: &str, entries: &[HeartbeatEntry], now:
     let mut lines = vec![
         "# Deputy upgrade plan".to_owned(),
         String::new(),
-        format!("Repository: `{repo}`"),
+        format!("For this GitHub repository only: `{repo}`"),
         format!("Generated: {} (UTC)", unix_ymd(now)),
         String::new(),
-        "These crates.io releases are **at least 7 days old** and newer than the version pinned in this repo's `Cargo.lock`. Verify each update before merging. Newer-than-a-week releases are omitted on purpose so a just-published crate can settle.".to_owned(),
+        "This file is a checklist for **this repo** — the `Cargo.lock` committed here. It is not Deputy's vault, not other repositories in a Deputy workspace, and not a list of crates to copy into every project.".to_owned(),
+        String::new(),
+        "Each row is a crate that appears in this lockfile: dependencies you declared **and** their transitive crates. `pinned` is the version in this `Cargo.lock`. `latest` is the newest crates.io release of that crate **name**, kept until it is **at least 7 days old** so a just-published version can settle.".to_owned(),
+        String::new(),
+        "How to use it:".to_owned(),
+        String::new(),
+        "1. Handle **advisories** first.".to_owned(),
+        "2. Compatible bumps (same major, e.g. `1.2.3` → `1.2.9`) are usually `cargo update` or `cargo update -p <crate>`.".to_owned(),
+        "3. New majors (`0.7` → `0.8`, or `0.1` / `0.2` / `0.3` all pointing at one `latest`) need a `Cargo.toml` change in the crate that pulled them in. `cargo update` will not take those.".to_owned(),
+        "4. Several rows for the same crate mean this lockfile still contains more than one major; that is normal until a parent crate moves.".to_owned(),
         String::new(),
     ];
     if entries.is_empty() {
-        lines.push("No dependencies in this repository currently meet that bar.".to_owned());
+        lines.push(
+            "No crates in this repository's `Cargo.lock` currently meet that bar.".to_owned(),
+        );
         lines.push(String::new());
         return lines.join("\n");
     }
-    lines.push("| crate | pinned | latest | published | advisories |".to_owned());
-    lines.push("|---|---|---|---|---|".to_owned());
     let mut rows: Vec<&HeartbeatEntry> = entries.iter().collect();
     rows.sort_by(|a, b| a.name.cmp(&b.name).then(a.current.cmp(&b.current)));
-    for e in rows {
-        let latest = e.latest.as_deref().unwrap_or("?");
-        let published = e
-            .latest_updated
-            .filter(|t| *t > 0)
-            .map(unix_ymd)
-            .unwrap_or_else(|| "—".to_owned());
-        let adv = if e.advisories.is_empty() {
-            "—".to_owned()
-        } else {
-            e.advisories.join("; ")
-        };
-        lines.push(format!(
-            "| `{}` | `{}` | `{latest}` | {published} | {adv} |",
-            e.name, e.current
-        ));
-    }
+    let body: Vec<Vec<String>> = rows
+        .iter()
+        .map(|e| {
+            let latest = e.latest.as_deref().unwrap_or("?");
+            let published = e
+                .latest_updated
+                .filter(|t| *t > 0)
+                .map(unix_ymd)
+                .unwrap_or_else(|| "—".to_owned());
+            let adv = if e.advisories.is_empty() {
+                "—".to_owned()
+            } else {
+                e.advisories.join("; ")
+            };
+            vec![
+                format!("`{}`", e.name),
+                format!("`{}`", e.current),
+                format!("`{latest}`"),
+                published,
+                adv,
+            ]
+        })
+        .collect();
+    lines.extend(aligned_markdown_table(
+        &["crate", "pinned", "latest", "published", "advisories"],
+        &body,
+    ));
     lines.push(String::new());
     lines.join("\n")
+}
+
+/// GFM table with space-padded cells so columns line up in the raw file.
+fn aligned_markdown_table(headers: &[&str], rows: &[Vec<String>]) -> Vec<String> {
+    let cols = headers.len();
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate().take(cols) {
+            widths[i] = widths[i].max(cell.chars().count());
+        }
+    }
+    for w in &mut widths {
+        *w = (*w).max(3);
+    }
+    let pad = |s: &str, w: usize| {
+        let n = s.chars().count();
+        if n >= w {
+            s.to_owned()
+        } else {
+            format!("{s}{}", " ".repeat(w - n))
+        }
+    };
+    let pipe = |cells: &[String]| {
+        let inner: Vec<String> = cells
+            .iter()
+            .zip(widths.iter())
+            .map(|(c, w)| pad(c, *w))
+            .collect();
+        format!("| {} |", inner.join(" | "))
+    };
+    let mut out = Vec::with_capacity(rows.len() + 2);
+    out.push(pipe(
+        &headers.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),
+    ));
+    out.push(pipe(
+        &widths.iter().map(|w| "-".repeat(*w)).collect::<Vec<_>>(),
+    ));
+    for row in rows {
+        let mut cells = row.clone();
+        cells.resize(cols, String::new());
+        out.push(pipe(&cells));
+    }
+    out
 }
 
 pub(crate) fn aged_plan_entries(
@@ -3289,9 +3351,9 @@ impl DeputyService {
     }
 
     /// Commit `docs/plans/deputy-upgrades.md` into every GitHub repo in this workspace
-    /// (capability: WRITE). Each file lists that repo's lockfile pins whose latest crates.io
-    /// release is at least a week old. Local ingest names are skipped; missing `docs/plans/`
-    /// is created by the Contents API.
+    /// (capability: WRITE). Each file is that repo's own `Cargo.lock` (direct + transitive),
+    /// listing crates.io releases at least a week old. Local ingest names are skipped;
+    /// missing `docs/plans/` is created by the Contents API.
     pub async fn send_upgrade_plans(
         &self,
         name: String,

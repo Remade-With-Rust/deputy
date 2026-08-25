@@ -157,8 +157,8 @@ key, but mID itself exports no such secret today.
 ## 10. Open questions
 
 1. **Use the private Rust reference directly?** — **Resolved: crates.io dependency on the
-   published mID crates.** `deputy-id` depends on `mid-verify` (and, in tests,
-   `mid-issuer`/`kms-client`) from crates.io at an **exact pin** (`=0.1.0`) — published from
+   published mID crates.** `deputy-id` depends on `mid-signin` (`=0.1.1`; its `mid-verify` core
+   remains `=0.1.0`) and, in tests, `mid-issuer`/`kms-client` (`=0.1.1`) from crates.io — published from
    [`github.com/Remade-With-Rust/mid`](https://github.com/Remade-With-Rust/mid) (Deputy practises
    its own thesis — a trust-base dependency is frozen, never a moving range). `verify` is
    implemented; 9 tests pass against real wallet-minted tokens.

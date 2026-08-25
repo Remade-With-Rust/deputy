@@ -1,9 +1,18 @@
 # Deputy upgrade plan
 
-Repository: `Remade-With-Rust/deputy`
+For this GitHub repository only: `Remade-With-Rust/deputy`
 Generated: 2026-08-25 (UTC)
 
-These crates.io releases are **at least 7 days old** and newer than the version pinned in this repo's `Cargo.lock`. Verify each update before merging. Newer-than-a-week releases are omitted on purpose so a just-published crate can settle.
+This file is a checklist for **this repo** — the `Cargo.lock` committed here. It is not Deputy's vault, not other repositories in a Deputy workspace, and not a list of crates to copy into every project.
+
+Each row is a crate that appears in this lockfile: dependencies you declared **and** their transitive crates. `pinned` is the version in this `Cargo.lock`. `latest` is the newest crates.io release of that crate **name**, kept until it is **at least 7 days old** so a just-published version can settle.
+
+How to use it:
+
+1. Handle **advisories** first.
+2. Compatible bumps (same major, e.g. `1.2.3` → `1.2.9`) are usually `cargo update` or `cargo update -p <crate>`.
+3. New majors (`0.7` → `0.8`, or `0.1` / `0.2` / `0.3` all pointing at one `latest`) need a `Cargo.toml` change in the crate that pulled them in. `cargo update` will not take those.
+4. Several rows for the same crate mean this lockfile still contains more than one major; that is normal until a parent crate moves.
 
 | crate | pinned | latest | published | advisories |
 |---|---|---|---|---|

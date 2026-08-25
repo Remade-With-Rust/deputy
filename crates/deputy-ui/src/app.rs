@@ -3828,9 +3828,9 @@ fn HeartbeatTab() -> Element {
             }
             p { class: "muted scan-hint",
                 {if current.as_ref().is_some_and(Workspace::is_all) {
-                    "Newer crates.io releases across all workspaces. Check the versions to send to production. Send Plans writes each repo's own week-old updates into docs/plans/deputy-upgrades.md.".to_string()
+                    "Newer crates.io releases across all workspaces. Check versions to migrate into the vault. Send Plans writes one docs/plans/deputy-upgrades.md per GitHub repo — that repo's Cargo.lock only (direct + transitive), week-old releases, not a shared group list.".to_string()
                 } else if current.is_some() {
-                    format!("Newer crates.io releases for {ws_label}. Check the versions to send to production. Send Plans writes week-old updates into that repo's docs/plans/deputy-upgrades.md (creating the folder if needed).")
+                    format!("Newer crates.io releases for {ws_label}. Check versions to migrate into the vault. Send Plans writes that GitHub repo's own Cargo.lock (direct + transitive) into docs/plans/deputy-upgrades.md — not other repos, not Deputy's vault. Creates the folder if needed. Only crates.io releases at least 7 days old.")
                 } else {
                     "Select a workspace in the sidebar to see dependencies with newer releases.".to_string()
                 }}

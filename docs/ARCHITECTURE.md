@@ -150,8 +150,8 @@ scan:       scan(ArtifactRef) -> ScanVerdict
 deploy:     promote(ArtifactRef) -> PromotionReceipt   # dirty → prod, requires clean scan
             redeploy(SourceId) -> DeployPlan
             gate(deploy_request) -> GateDecision        # block if any dep not clean
-plans:      send_upgrade_plans(folder, repo?)           # commit docs/plans/deputy-upgrades.md
-                                                        # per GitHub repo; crates.io latest ≥ 7 days old
+plans:      send_upgrade_plans(folder, repo?)           # per-repo Cargo.lock → docs/plans/
+                                                        # (direct + transitive; crates.io latest ≥ 7 days)
 ```
 
 Every mutating call takes a `Session` and is rejected without a valid mID

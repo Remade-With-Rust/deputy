@@ -80,8 +80,9 @@ serve_blocking(service, "127.0.0.1:7878".parse()?)?;
 
 Upgrade plans (WRITE): `POST /folders/upgrade-plans` with `{ "name": "<workspace>", "repo": "owner/name" }`
 (`repo` omitted = every GitHub repo in that workspace, or all workspaces when `name` is `*`).
-Each repo gets `docs/plans/deputy-upgrades.md` — only updates whose crates.io release is at least
-a week old. See [the root README How to](https://github.com/Remade-With-Rust/deputy#how-to).
+Each repo gets `docs/plans/deputy-upgrades.md` for **that repo's** `Cargo.lock` (direct +
+transitive). Only crates.io releases at least a week old. Compatible bumps are `cargo update`;
+new majors need a `Cargo.toml` change. See [the root README How to](https://github.com/Remade-With-Rust/deputy#how-to).
 
 ## Where this sits
 

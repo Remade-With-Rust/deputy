@@ -59,7 +59,7 @@ Do **not** use `dx serve` for the desktop app. The window embeds the API at `htt
 2. Pick repositories (or a local folder) and download them into a named workspace.
 3. **Scan** that workspace.
 4. **New Versions** — crates.io releases newer than each repo's `Cargo.lock`.
-   - **Send Plans** commits `docs/plans/deputy-upgrades.md` into **each GitHub repo** (creates `docs/plans/` if it is missing). Each file lists *that* repo's pins whose latest crates.io release is **at least 7 days old**, so a just-published crate can settle. Local folders are skipped.
+   - **Send Plans** commits `docs/plans/deputy-upgrades.md` into **each GitHub repo** (creates `docs/plans/` if it is missing). The file is **that repo's** `Cargo.lock` only — crates you declared and their transitive deps — not other repos in the workspace and not Deputy's vault. `latest` is crates.io's newest release of that crate name, held until it is **at least 7 days old**. Compatible bumps are usually `cargo update`; new majors need a `Cargo.toml` change. Local folders are skipped.
    - Check the versions you want in the vault, then **Redeploy to Production**.
 5. **Production** is what has been promoted.
 
@@ -110,7 +110,8 @@ Deputy is the personal backstop:
 - **Dep Analytics** — language mix across crate sources (bars + per-crate languages/lines).
 - **New Versions** — tracks scanned dependencies for newer releases and public advisories.
   Check versions to migrate into production, or **Send Plans** to commit a per-repo
-  `docs/plans/deputy-upgrades.md` listing updates whose crates.io release is at least a week old.
+  `docs/plans/deputy-upgrades.md` for **that GitHub repo's** `Cargo.lock` (direct + transitive).
+  Only crates.io releases at least a week old are listed.
 - **Staging → production** — promote scanned-clean dependencies into `prod` with hash-chained,
   mID-attributed receipts; hold anything not ready in staging.
 - **Offline-coverage check** — reports exactly which dependencies are safely archived vs. gaps

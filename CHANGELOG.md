@@ -8,15 +8,26 @@ Conventional Commits.
 
 ## [Unreleased]
 
+### Changed
+
+- **Send Plans copy** — each `docs/plans/deputy-upgrades.md` is explicitly **that GitHub repo's**
+  `Cargo.lock` (direct + transitive), with guidance that compatible bumps are `cargo update` and
+  new majors need a `Cargo.toml` change.
+
+### Security
+
+- `crossbeam-epoch` (and other compatible lockfile crates) refreshed via `cargo update`.
+- House mID kit: `mid-signin` / `mid-issuer` / `kms-client` `0.1.0` → `0.1.1` (`mid-verify` stays `0.1.0`).
+
 ## [0.4.0] - 2026-08-25
 
 ### Added
 
 - **Send Plans** — from New Versions, commit `docs/plans/deputy-upgrades.md` into each GitHub
   repo in the current workspace (`POST /folders/upgrade-plans`, `DeputyService::send_upgrade_plans`).
-  Creates `docs/plans/` when it is missing. Each file lists that repo's own lockfile pins whose
-  latest crates.io release is **at least 7 days old**, so a just-published crate can settle.
-  Local ingest names are skipped.
+  Creates `docs/plans/` when it is missing. Each file is that repo's own `Cargo.lock` (direct +
+  transitive). Only crates.io releases **at least 7 days old** are listed. Local ingest names
+  are skipped.
 
 ## [0.3.0] - 2026-08-25
 

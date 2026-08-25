@@ -5,8 +5,8 @@
 //! methods. [`serve`] exposes it as a localhost HTTP/JSON server.
 //!
 //! Folder ops include [`DeputyService::send_upgrade_plans`] (`POST /folders/upgrade-plans`):
-//! commit `docs/plans/deputy-upgrades.md` into each GitHub repo, listing lockfile pins whose
-//! latest crates.io release is at least a week old.
+//! commit `docs/plans/deputy-upgrades.md` into each GitHub repo for **that repo's** `Cargo.lock`
+//! (direct + transitive). Only crates.io releases at least a week old.
 //!
 //! Opening the service is **mID-gated**: a valid [`deputy_id::Session`] authorizes the vault
 //! unlock, while the passphrase derives the at-rest key (`docs/AUTH.md` §8) — the

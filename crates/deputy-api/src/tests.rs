@@ -879,16 +879,34 @@ fn aged_update_requires_a_week_old_crates_io_release() {
 fn upgrade_plan_markdown_lists_only_the_aged_rows() {
     let now = 1_800_000_000;
     let serde = hb_entry("serde", "1.0.0", "1.1.0", true);
-    let md = upgrade_plan_markdown("owner/repo", &[serde], now);
+    let md = upgrade_plan_markdown("owner/repo", &[serde.clone()], now);
     assert!(md.contains("owner/repo"));
     assert!(md.contains("`serde`"));
     assert!(md.contains("`1.0.0`"));
     assert!(md.contains("`1.1.0`"));
+    assert!(md.contains("For this GitHub repository only"));
     assert!(md.contains("at least 7 days old"));
+    assert!(md.contains("cargo update"));
     assert!(!md.contains("tokio"));
 
+    let long = hb_entry("aho-corasick", "1.1.4", "1.1.5", true);
+    let aligned = upgrade_plan_markdown("owner/repo", &[serde.clone(), long], now);
+    let table: Vec<&str> = aligned.lines().filter(|l| l.starts_with('|')).collect();
+    assert!(table.len() >= 3, "header, rule, rows");
+    let pipes = |line: &str| {
+        line.chars()
+            .enumerate()
+            .filter(|(_, c)| *c == '|')
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>()
+    };
+    let header_pipes = pipes(table[0]);
+    for line in &table {
+        assert_eq!(pipes(line), header_pipes, "columns line up in `{line}`");
+    }
+
     let empty = upgrade_plan_markdown("owner/repo", &[], now);
-    assert!(empty.contains("No dependencies in this repository currently meet that bar."));
+    assert!(empty.contains("No crates in this repository's `Cargo.lock` currently meet that bar."));
 }
 
 #[test]

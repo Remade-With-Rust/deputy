@@ -80,9 +80,10 @@ export DEPUTY_NO_MID=1
 cargo run -p deputy-ui --features desktop
 ```
 
-**Send Plans** writes `docs/plans/deputy-upgrades.md` into each connected GitHub repo — only
-crates.io releases at least 7 days old, so a just-published crate can settle. Same op over HTTP:
-`POST /folders/upgrade-plans`.
+**Send Plans** writes `docs/plans/deputy-upgrades.md` into each connected GitHub repo. Each
+file is **that repo's** `Cargo.lock` (direct + transitive), not a workspace-wide dump.
+Only crates.io releases at least 7 days old are listed. Compatible bumps: `cargo update`.
+New majors need a `Cargo.toml` change. Same op over HTTP: `POST /folders/upgrade-plans`.
 
 Command-line pipeline (no dashboard):
 

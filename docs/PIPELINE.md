@@ -122,10 +122,14 @@ each GitHub repo in the current workspace. GitHub creates `docs/plans/` if it is
 This is a documentation write (Contents API), **not** a `Promoted` → `Deployed` edge and not
 Redeploy-to-production.
 
-Each file lists **that repo's** `Cargo.lock` pins whose latest crates.io release is at least
-**7 days old** — so a just-published crate can settle before anyone is asked to bump it.
-Local ingest names are skipped. Group / all-workspaces views write one file per child repo,
-never the aggregate table into every repository.
+Each file is **that repo's** `Cargo.lock` — crates declared there **and** their transitive
+graph — whose latest crates.io release is at least **7 days old**. It is not Deputy's vault
+and not a copy of another repo's list. Group / all-workspaces views write one file per child
+repo. Local ingest names are skipped.
+
+`latest` is the newest crates.io version of that crate **name**. Compatible (same-major) bumps
+are usually `cargo update`; a new major needs a `Cargo.toml` change in the crate that pulled
+it in. Several rows for one crate mean the lockfile still contains more than one major.
 
 ## 8. End-to-end state machine
 

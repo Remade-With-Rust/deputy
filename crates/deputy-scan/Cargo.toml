@@ -11,9 +11,9 @@ keywords = ["security", "vulnerability", "advisory", "supply-chain", "scanner"]
 categories = ["development-tools"]
 
 [dependencies]
-deputy-core = { path = "../deputy-core", version = "0.4.1" }
-deputy-store = { path = "../deputy-store", version = "0.4.1" }
-deputy-analyze = { path = "../deputy-analyze", version = "0.4.1" }
+deputy-core = { path = "../deputy-core", version = "0.4.2" }
+deputy-store = { path = "../deputy-store", version = "0.4.2" }
+deputy-analyze = { path = "../deputy-analyze", version = "0.4.2" }
 semver = "1"
 serde = { workspace = true }
 toml = "0.8"

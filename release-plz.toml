@@ -11,6 +11,11 @@ git_release_enable = true
 semver_check = true
 
 # deputy-ui is a wasm application, not a library — never release or publish it.
+#
+# `release = false` alone is not enough: release-plz's `publish` field defaults to
+# true independently, so it read this config as asking to publish a crate whose
+# Cargo.toml sets `publish = false`, and refused to run at all.
 [[package]]
 name = "deputy-ui"
 release = false
+publish = false

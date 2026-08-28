@@ -36,8 +36,8 @@ spacedb-replica = "0.5.2"
 spacedb-meter = "0.5.2"
 
 # Allocator seam (deliverables only). Pin exactly what we verified.
-rusty_alloc = "=1.1.4"
-rusty_alloc-api = "=1.1.4"
+rusty_alloc = "=1.1.6"
+rusty_alloc-api = "=1.1.6"
 
 # Compression + internal wire format.
 rusty_zstd = "0.1"

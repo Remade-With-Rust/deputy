@@ -11,7 +11,7 @@ keywords = ["cargo", "dependencies", "supply-chain", "lockfile"]
 categories = ["development-tools::cargo-plugins"]
 
 [dependencies]
-deputy-core = { path = "../deputy-core", version = "0.4.1" }
+deputy-core = { path = "../deputy-core", version = "0.4.2" }
 # Cargo.lock is TOML.
 toml = "0.8"
 serde = { workspace = true }

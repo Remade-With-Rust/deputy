@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/Remade-With-Rust/deputy/compare/deputy-ecosystem-v0.4.2...deputy-ecosystem-v0.4.3) - 2026-08-29
+
+### Other
+
+- release v0.4.2 ([#6](https://github.com/Remade-With-Rust/deputy/pull/6))
+
 ## [0.4.2](https://github.com/Remade-With-Rust/deputy/compare/deputy-ecosystem-v0.4.1...deputy-ecosystem-v0.4.2) - 2026-08-28
 
 ### Other

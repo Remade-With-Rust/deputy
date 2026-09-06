@@ -1,3 +1,7 @@
+### In The Wild with 2,815 Active Installs
+
+FREE RAG Converter Online -- <a href="https://RAGconverter.com">RAGconverter.com</a>
+
 # Deputy
 
 [![crates.io](https://img.shields.io/crates/v/deputy-cli?logo=rust)](https://crates.io/crates/deputy-cli)

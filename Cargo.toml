@@ -27,13 +27,13 @@ mata-cap = "0.1"
 
 # Storage — SpaceDB 0.5. Libraries MUST take spacedb-sdk with default-features = false
 # so they do not install rusty_alloc into every consumer.
-spacedb-sdk = { version = "0.5.2", default-features = false }
-spacedb-access = "0.5.2"
-spacedb-store = "0.5.2"
-spacedb-crdt = "0.5.2"
-spacedb-durability = "0.5.2"
-spacedb-replica = "0.5.2"
-spacedb-meter = "0.5.2"
+spacedb-sdk = { version = "0.6.0", default-features = false }
+spacedb-access = "0.6.0"
+spacedb-store = "0.6.0"
+spacedb-crdt = "0.6.0"
+spacedb-durability = "0.6.0"
+spacedb-replica = "0.6.0"
+spacedb-meter = "0.6.0"
 
 # Allocator seam (deliverables only). Pin exactly what we verified.
 rusty_alloc = "=1.1.6"

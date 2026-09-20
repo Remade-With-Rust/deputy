@@ -5800,9 +5800,9 @@ checksum = "aa93a03c43b2aa9f185d2cc300f326c770683e05b78d32f7bad4c8c7092067b9"
 
 [[package]]
 name = "rusty_zstd"
-version = "0.1.0"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1636aed13fadd8fd7794027a483fcf005848055793292cfdd27782a9b6fea24c"
+checksum = "cc2318a1441e10cf436f0bf98615216b0a5410b6f546548b50faa170c7b4a1a6"
 
 [[package]]
 name = "ryu"

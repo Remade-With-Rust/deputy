@@ -11,14 +11,14 @@ keywords = ["supply-chain", "security", "dependencies", "api"]
 categories = ["development-tools", "web-programming::http-server"]
 
 [dependencies]
-deputy-core = { path = "../deputy-core", version = "0.4.2" }
-deputy-store = { path = "../deputy-store", version = "0.4.2" }
-deputy-id = { path = "../deputy-id", version = "0.4.2" }
-deputy-ecosystem = { path = "../deputy-ecosystem", version = "0.4.2" }
-deputy-acquire = { path = "../deputy-acquire", version = "0.4.2" }
-deputy-analyze = { path = "../deputy-analyze", version = "0.4.2" }
-deputy-scan = { path = "../deputy-scan", version = "0.4.2" }
-deputy-deploy = { path = "../deputy-deploy", version = "0.4.2" }
+deputy-core = { path = "../deputy-core", version = "0.4.3" }
+deputy-store = { path = "../deputy-store", version = "0.4.3" }
+deputy-id = { path = "../deputy-id", version = "0.4.3" }
+deputy-ecosystem = { path = "../deputy-ecosystem", version = "0.4.3" }
+deputy-acquire = { path = "../deputy-acquire", version = "0.4.3" }
+deputy-analyze = { path = "../deputy-analyze", version = "0.4.3" }
+deputy-scan = { path = "../deputy-scan", version = "0.4.3" }
+deputy-deploy = { path = "../deputy-deploy", version = "0.4.3" }
 # SpaceDB SDK (library: allocator opted out) re-exports Layer 5 capabilities.
 # mata-cap is the typed API-first authorize chokepoint every Deputy op also hits.
 spacedb-sdk = { workspace = true }

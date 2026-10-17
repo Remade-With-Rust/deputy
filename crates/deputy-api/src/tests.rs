@@ -39,6 +39,7 @@ fn test_session(exp: u64) -> Session {
         claims: BTreeMap::new(),
         current_version: 1,
         genesis_roster_hash: [0u8; 32],
+        roster_hashes: vec![(1, [0u8; 32])],
         iat: 0,
         exp,
         aud: "https://deputy.local".to_owned(),

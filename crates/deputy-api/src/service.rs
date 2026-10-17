@@ -1374,6 +1374,8 @@ impl DeputyService {
             claims: std::collections::BTreeMap::new(),
             current_version: 0,
             genesis_roster_hash: [0u8; 32],
+            // mID 0.2 carries the roster history; the local identity has only its genesis.
+            roster_hashes: vec![(0, [0u8; 32])],
             iat: 0,
             exp: u64::MAX,
             aud: LOCAL_DID.to_owned(),

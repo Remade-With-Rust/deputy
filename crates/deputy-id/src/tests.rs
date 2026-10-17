@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     AnchorStore, Authenticator, IdError, InMemoryAnchorStore, InMemoryNonceStore, NonceStore,
-    Session, VerifyParams,
+    PresentedRoster, Session, VerifyParams,
 };
 
 const AUD: &str = "https://deputy.local";
@@ -230,12 +230,25 @@ fn anchor_store_enforces_genesis_and_version() {
     let did = "did:mata:example";
     let genesis = [1u8; 32];
     let other_genesis = [2u8; 32];
+    // mID 0.2: a sign-in presents its whole roster history, genesis first. Every
+    // presentation here continues one history, so only genesis and version decide.
+    let presented = |genesis: [u8; 32], version: u64| PresentedRoster {
+        genesis_roster_hash: genesis,
+        current_version: version,
+        roster_hashes: (1..=version)
+            .map(|v| {
+                let mut hash = genesis;
+                hash[31] = v as u8;
+                (v, hash)
+            })
+            .collect(),
+    };
 
-    store.check_and_update(did, &genesis, 5).unwrap(); // first sight
-    store.check_and_update(did, &genesis, 5).unwrap(); // same version OK
-    store.check_and_update(did, &genesis, 7).unwrap(); // higher version OK
+    store.check_and_update(did, &presented(genesis, 5)).unwrap(); // first sight
+    store.check_and_update(did, &presented(genesis, 5)).unwrap(); // same version OK
+    store.check_and_update(did, &presented(genesis, 7)).unwrap(); // higher version OK
 
-    let rollback = store.check_and_update(did, &genesis, 6).unwrap_err();
+    let rollback = store.check_and_update(did, &presented(genesis, 6)).unwrap_err();
     assert!(matches!(
         rollback,
         IdError::Rollback {
@@ -245,7 +258,7 @@ fn anchor_store_enforces_genesis_and_version() {
         }
     ));
 
-    let spoof = store.check_and_update(did, &other_genesis, 8).unwrap_err();
+    let spoof = store.check_and_update(did, &presented(other_genesis, 8)).unwrap_err();
     assert!(matches!(spoof, IdError::GenesisMismatch { .. }));
 }
 

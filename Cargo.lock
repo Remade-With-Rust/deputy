@@ -44,17 +44,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ahash"
-version = "0.7.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891477e0c6a8957309ee5c45a6368af3ae14bb510732d2684ffa19af310920f9"
-dependencies = [
- "getrandom 0.2.17",
- "once_cell",
- "version_check",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1365,7 +1354,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "lock_api",
  "once_cell",
- "parking_lot_core 0.9.12",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -1926,7 +1915,7 @@ dependencies = [
  "generational-box",
  "http",
  "inventory",
- "parking_lot 0.12.5",
+ "parking_lot",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -2068,7 +2057,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "generational-box",
- "parking_lot 0.12.5",
+ "parking_lot",
  "rustc-hash 2.1.3",
  "tracing",
  "warnings",
@@ -2778,7 +2767,7 @@ version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8b2dc9b873cd1a8adb80aa5dcef9a8205f781a8a313d5ffb867248cb3bcb764"
 dependencies = [
- "parking_lot 0.12.5",
+ "parking_lot",
  "tracing",
 ]
 
@@ -3109,15 +3098,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
 dependencies = [
  "byteorder",
-]
-
-[[package]]
-name = "hashbrown"
-version = "0.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
-dependencies = [
- "ahash",
 ]
 
 [[package]]
@@ -3508,15 +3488,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "instant"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "interpolate_name"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3694,9 +3665,9 @@ dependencies = [
 
 [[package]]
 name = "kms-client"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d444df92b537f88a8e1cebaab2ad07994b2373f198346ddb9497fcb0dc8293b6"
+checksum = "985beafb2199b67fad06ee83c40fafeb3791bb163806ea76d82adcf223ab7fbc"
 dependencies = [
  "getrandom 0.2.17",
  "kms-types",
@@ -3710,9 +3681,9 @@ dependencies = [
 
 [[package]]
 name = "kms-types"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2b4dbf32a94c1ae8f3db371813cc46a9f03085985f91066eda307996bd95d1d"
+checksum = "d06cfe1ed2c467a4969c2035913b3993c6ca128f9ea9c82923708d82c35ebf5e"
 dependencies = [
  "base64",
  "serde",
@@ -3909,15 +3880,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lru"
-version = "0.7.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e999beba7b6e8345721bd280141ed958096a2e4abdf74f67ff4ce49b4b54e47a"
-dependencies = [
- "hashbrown 0.12.3",
-]
-
-[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4009,12 +3971,21 @@ dependencies = [
 
 [[package]]
 name = "mata-cap"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8d381f5624917df7266426fcef3f2c40cb9fa78fcbc06481321735282ba943a"
+checksum = "441c84e5323cf7140f95a31cec8bba08d875118377cff6965454912cea68d00e"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "mata-ecdsa"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "308414bd714ce9209672d79746feb0c66c71b84af90279903caa3a1432b448cf"
+dependencies = [
+ "p256",
 ]
 
 [[package]]
@@ -4100,9 +4071,9 @@ dependencies = [
 
 [[package]]
 name = "mid-issuer"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f838aa9855b28f372dab0571a43eb34627175b085583bcce95bcbbae037f54a"
+checksum = "079e9ad89b2571ca31b3c42913c12642f83c91a4007873c2a9b10b09c94f45f7"
 dependencies = [
  "base64",
  "kms-client",
@@ -4115,9 +4086,9 @@ dependencies = [
 
 [[package]]
 name = "mid-signin"
-version = "0.1.1"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a99e56c5d1c33cc638e9f739a1d7fd386027493a962e4ce24856b72f6069c9c5"
+checksum = "5a94d307d133b2f1ad7c608c0150a58b559dcc52973bc3ff8c559ad3e2333b9f"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
@@ -4129,12 +4100,13 @@ dependencies = [
 
 [[package]]
 name = "mid-verify"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2837b9c72fc75798b8c003062d1d12752ed0767611e1919c33a0dbc2f193490d"
+checksum = "8ba3e7edb03d9b81dc627b6c846057b20fdb7fa3efee6baea75a29b1324fa3c5"
 dependencies = [
  "base64",
  "bs58",
+ "mata-ecdsa",
  "mid-issuer",
  "p256",
  "serde",
@@ -4658,37 +4630,12 @@ checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 
 [[package]]
 name = "parking_lot"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d17b78036a60663b797adeaee46f5c9dfebb86948d1255007a1d6be0271ff99"
-dependencies = [
- "instant",
- "lock_api",
- "parking_lot_core 0.8.6",
-]
-
-[[package]]
-name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
 dependencies = [
  "lock_api",
- "parking_lot_core 0.9.12",
-]
-
-[[package]]
-name = "parking_lot_core"
-version = "0.8.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60a2cfe6f0ad2bfc16aefa463b497d5c7a5ecd44a23efa72aa342d90177356dc"
-dependencies = [
- "cfg-if",
- "instant",
- "libc",
- "redox_syscall 0.2.16",
- "smallvec",
- "winapi",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -4699,7 +4646,7 @@ checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall 0.5.18",
+ "redox_syscall",
  "smallvec",
  "windows-link 0.2.1",
 ]
@@ -4963,6 +4910,12 @@ dependencies = [
  "opaque-debug",
  "universal-hash",
 ]
+
+[[package]]
+name = "portable-atomic"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "postcard"
@@ -5505,15 +5458,6 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.2.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb5a58c1855b4b6819d59012155603f0b22ad30cad752600aadfcb695265519a"
-dependencies = [
- "bitflags 1.3.2",
-]
-
-[[package]]
-name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
@@ -5530,19 +5474,6 @@ dependencies = [
  "getrandom 0.2.17",
  "libredox",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "reed-solomon-erasure"
-version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7263373d500d4d4f505d43a2a662d475a894aa94503a1ee28e9188b5f3960d4f"
-dependencies = [
- "libm",
- "lru",
- "parking_lot 0.11.2",
- "smallvec",
- "spin",
 ]
 
 [[package]]
@@ -5769,22 +5700,48 @@ checksum = "32b33056772f9ff573e20dd445997d4aa35e459593734d51674fbfab9f90366c"
 
 [[package]]
 name = "rusty_alloc"
-version = "1.1.6"
+version = "2.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c93620fee9935a120a50df2086fe48fa072f7d391f129a5e04bf20ea9b83097d"
+checksum = "318c1ca44267aa30e631ed57f8c1db3e25991374bdadc35d97db11b65faba496"
 dependencies = [
  "libc",
+ "portable-atomic",
  "windows-sys 0.60.2",
 ]
 
 [[package]]
 name = "rusty_alloc-api"
-version = "1.1.6"
+version = "2.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05ce52d7f72842a590e4588013d70ea02d27edbf6b6af9bc193f6e1ac173845a"
+checksum = "613568557b57208dff4fa2cdb1ada1bc98339d3cc3ab9533edd712c4946165b4"
 dependencies = [
  "rusty_alloc",
 ]
+
+[[package]]
+name = "rusty_erasure"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed29bb151d36095306a705a97d4372175a400eba5db826ebd6f16108d303535b"
+dependencies = [
+ "rusty_erasure-accel",
+ "rusty_erasure-core",
+]
+
+[[package]]
+name = "rusty_erasure-accel"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f936d7453da2c1978e4c60c6eb66d2c27deda143f867fabe2310b3be45935667"
+dependencies = [
+ "rusty_erasure-core",
+]
+
+[[package]]
+name = "rusty_erasure-core"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b693e1dccb5b72487d60902e1294ab0ea19d7ce9696053f78b9ef3c97f9ae80f"
 
 [[package]]
 name = "rusty_symbols"
@@ -5800,9 +5757,9 @@ checksum = "aa93a03c43b2aa9f185d2cc300f326c770683e05b78d32f7bad4c8c7092067b9"
 
 [[package]]
 name = "rusty_zstd"
-version = "0.1.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1636aed13fadd8fd7794027a483fcf005848055793292cfdd27782a9b6fea24c"
+checksum = "145055be9e2940b6b6ad3e5d5bcb09083db51f0112837a89658fd44ca2bf0c40"
 
 [[package]]
 name = "ryu"
@@ -6236,9 +6193,9 @@ dependencies = [
 
 [[package]]
 name = "spacedb-access"
-version = "0.5.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a109d0f044a19e4c31ee8e04a72629290ac2c48dfaaefe28177b9b06d8ac35c4"
+checksum = "e854dabccceb1589aa80fe09317b5ae39621637d521c42f460c3e80abd856109"
 dependencies = [
  "blake3",
  "getrandom 0.3.4",
@@ -6250,18 +6207,18 @@ dependencies = [
 
 [[package]]
 name = "spacedb-consistency"
-version = "0.5.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b78eb34d357514ec94a2e23c7ef09a7fc3966ae8e4e5019ce598dcf5f45171f4"
+checksum = "27fd130cb60bb047b94dba7a8e0286622e46bb77fded9a59afee0fe65d011a1e"
 dependencies = [
  "spacedb-crdt",
 ]
 
 [[package]]
 name = "spacedb-crdt"
-version = "0.5.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65ecfab39719ce6c56e4498e7f2a29cfd7a88fd872e2a2ec45632f745ae0e997"
+checksum = "e3d391f89680e8b76da516310a2e33afcd7dd07d0b1def5a6c37c432add2ae5a"
 dependencies = [
  "getrandom 0.3.4",
  "serde",
@@ -6273,22 +6230,22 @@ dependencies = [
 
 [[package]]
 name = "spacedb-durability"
-version = "0.5.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e028c06decd498d21f36a847ecacbf6de4739cb768f4c067be725a1432fa74e9"
+checksum = "c88b1656758d13b7575de70dba4271a9a465c3a4c59d4a714073a1a96516c0a8"
 dependencies = [
  "blake3",
  "postcard",
- "reed-solomon-erasure",
+ "rusty_erasure",
  "serde",
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "spacedb-meter"
-version = "0.5.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c3b16039931f675c70121742d3910877828bd17fc87fc43c155dde9d227fc1e"
+checksum = "33e1adcea579e1c7f057768f60837108580e506040f7a68c544de7d46b729062"
 dependencies = [
  "postcard",
  "serde",
@@ -6297,9 +6254,9 @@ dependencies = [
 
 [[package]]
 name = "spacedb-replica"
-version = "0.5.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ff7017c2637aaae6618fc13e09cdd7520b9b1ee3e78a663c2e81fce89bceb7c"
+checksum = "c176a23071efba281b0f9fa15680493e8707c9978dc0158c908877674754b258"
 dependencies = [
  "spacedb-crdt",
  "thiserror 1.0.69",
@@ -6307,9 +6264,9 @@ dependencies = [
 
 [[package]]
 name = "spacedb-sdk"
-version = "0.5.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffe654798d055da32c3516fc57163cf81c4820c31340945e8896c431429f73e8"
+checksum = "eb0efd12f279d2face256018f2b36e4d86f9a2187f555413a06fb02431e0a450"
 dependencies = [
  "spacedb-access",
  "spacedb-consistency",
@@ -6320,9 +6277,9 @@ dependencies = [
 
 [[package]]
 name = "spacedb-store"
-version = "0.5.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "750ffd093e84a072b8cc3e3a1aca5588e597f52220f1ebd188a4d6758285901b"
+checksum = "d27a2e85739cc7ff86c3b116aa2204bd8dc1d438741828761ee05c0dcd3dfac5"
 dependencies = [
  "aes-gcm",
  "blake3",
@@ -6330,6 +6287,7 @@ dependencies = [
  "postcard",
  "rand 0.8.8",
  "redb",
+ "rusty_zstd",
  "serde",
  "thiserror 1.0.69",
  "zeroize",
@@ -6367,7 +6325,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf776ba3fa74f83bf4b63c3dcbbf82173db2632ed8452cb2d891d33f459de70f"
 dependencies = [
  "new_debug_unreachable",
- "parking_lot 0.12.5",
+ "parking_lot",
  "phf_shared 0.11.3",
  "precomputed-hash",
  "serde",
@@ -6518,7 +6476,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "once_cell",
- "parking_lot 0.12.5",
+ "parking_lot",
  "raw-window-handle 0.5.2",
  "raw-window-handle 0.6.2",
  "tao-macros",

@@ -29,7 +29,7 @@ mod tests;
 // `Session` and `IdError` keep their historical Deputy names.
 pub use mid_signin::{
     verify, AnchorStore, ClaimValue, InMemoryAnchorStore, InMemoryNonceStore, NonceStore,
-    RpError as IdError, RpSession as Session, VerifyError, VerifyParams,
+    PresentedRoster, RpError as IdError, RpSession as Session, VerifyError, VerifyParams,
 };
 
 /// The full relying-party sign-in flow: cryptographic verification plus the out-of-band

@@ -40,11 +40,11 @@ rusty_alloc = "=2.2.6"
 rusty_alloc-api = "=2.2.6"
 
 # Compression + internal wire format.
-rusty_zstd = "0.4.1"
+rusty_zstd = "0.5.1"
 oxicode = { version = "0.2", features = ["serde"] }
 
 # UI chrome. Libraries/UI opt out of the crates' default rusty_alloc install.
-rusty_symbols = { version = "0.1", default-features = false }
+rusty_symbols = { version = "0.1.1", default-features = false }
 rusty_tokens = { version = "0.2", default-features = false, features = ["css"] }
 rusty_a11y = { version = "0.2", default-features = false }
 
